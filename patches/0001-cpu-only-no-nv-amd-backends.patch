@@ -1,0 +1,501 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 47a0f3b17..046ecad17 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -159,6 +159,19 @@ include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+ include_directories(${PROJECT_SOURCE_DIR}/third_party)
+ include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
+ 
++# NVGPUIR/NVWSIR/NVWSTransforms have no external NVIDIA deps but are referenced
++# unconditionally by core Triton transforms (TritonInstrumentToLLVM, TritonGPUTransforms).
++# When the nvidia backend is active the full third_party/nvidia/ tree provides them.
++# When building CPU-only we still need these dialect IRs and their tablegen outputs.
++if (NOT "nvidia" IN_LIST TRITON_CODEGEN_BACKENDS)
++  include_directories(${PROJECT_SOURCE_DIR}/third_party/nvidia/include)
++  include_directories(${PROJECT_BINARY_DIR}/third_party/nvidia/include)
++  add_subdirectory(third_party/nvidia/include/Dialect/NVGPU)
++  add_subdirectory(third_party/nvidia/lib/Dialect/NVGPU)
++  add_subdirectory(third_party/nvidia/include/Dialect/NVWS)
++  add_subdirectory(third_party/nvidia/lib/Dialect/NVWS)
++endif()
++
+ # link_directories(${LLVM_LIBRARY_DIR})
+ add_subdirectory(include)
+ add_subdirectory(lib)
+@@ -207,8 +220,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
+   if (TRITON_BUILD_PROTON)
+     add_subdirectory(third_party/proton)
+   endif()
+-  # We always build proton dialect
+-  list(APPEND TRITON_PLUGIN_NAMES "proton")
++  # Proton dialect plugin requires AMD/NV GPU headers (triton_proton.cc); only
++  # add it as a backend when at least one GPU codegen backend is active.
++  if (TRITON_CODEGEN_BACKENDS)
++    list(APPEND TRITON_PLUGIN_NAMES "proton")
++  endif()
+   add_subdirectory(third_party/proton/Dialect)
+ 
+   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
+@@ -242,15 +258,34 @@ if(TRITON_BUILD_PYTHON_MODULE)
+ 
+     # LLVM
+     LLVMPasses
+-    LLVMNVPTXCodeGen
+-    # LLVMNVPTXAsmPrinter
+-    LLVMAMDGPUCodeGen
+-    LLVMAMDGPUAsmParser
+ 
+     Python3::Module
+     pybind11::headers
+ 
+   )
++
++  # Conditionally link NVIDIA LLVM codegen only when NVPTX target is available.
++  # Skipped when building without NV backend (e.g. CPU-only / triton-shared builds).
++  if ("NVPTX" IN_LIST LLVM_TARGETS_TO_BUILD)
++    list(APPEND TRITON_LIBRARIES LLVMNVPTXCodeGen)
++  endif()
++
++  # Conditionally link AMD LLVM codegen only when AMDGPU target is available.
++  if ("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
++    list(APPEND TRITON_LIBRARIES LLVMAMDGPUCodeGen LLVMAMDGPUAsmParser)
++  endif()
++
++  # Conditionally link RISCV LLVM codegen when the RISCV target is available
++  # (e.g. when using a buddy-mlir LLVM built with LLVM_TARGETS_TO_BUILD=host;RISCV).
++  if ("RISCV" IN_LIST LLVM_TARGETS_TO_BUILD)
++    list(APPEND TRITON_LIBRARIES
++        LLVMRISCVCodeGen
++        LLVMRISCVAsmParser
++        LLVMRISCVDesc
++        LLVMRISCVDisassembler
++        LLVMRISCVInfo
++    )
++  endif()
+   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
+      CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
+      CMAKE_OSX_ARCHITECTURES MATCHES "arm64")  # also macOS arm64
+@@ -283,6 +318,17 @@ if(TRITON_BUILD_PYTHON_MODULE)
+ 
+   set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
+   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
++
++  # Expose backend availability as compile-time macros so that headers in
++  # bin/ and other places can guard AMD/NV-specific code without the generated
++  # tablegen files that only exist when the respective backend is built.
++  if ("nvidia" IN_LIST TRITON_CODEGEN_BACKENDS)
++    add_compile_definitions(TRITON_ENABLE_NVIDIA)
++  endif()
++  if ("amd" IN_LIST TRITON_CODEGEN_BACKENDS)
++    add_compile_definitions(TRITON_ENABLE_AMD)
++  endif()
++
+   add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
+                   ${PYTHON_SRC_PATH}/ir.cc
+                   ${PYTHON_SRC_PATH}/gluon_ir.cc
+@@ -341,8 +387,11 @@ endif()
+ find_package(Threads REQUIRED)
+ 
+ add_subdirectory(third_party/f2reduce)
+-add_subdirectory(bin)
+-add_subdirectory(test)
++# bin/ and test/ depend on NV/AMD-specific tools/headers; skip when no GPU backends are active.
++if (TRITON_CODEGEN_BACKENDS)
++  add_subdirectory(bin)
++  add_subdirectory(test)
++endif()
+ 
+ if(TRITON_BUILD_UT)
+   add_subdirectory(unittest)
+diff --git a/bin/CMakeLists.txt b/bin/CMakeLists.txt
+index cc0b4fa15..497e0df85 100644
+--- a/bin/CMakeLists.txt
++++ b/bin/CMakeLists.txt
+@@ -1,5 +1,11 @@
+ get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
+ 
++# TritonAMDGPUTestAnalysis is only built when the AMD backend is active.
++set(_amd_test_libs "")
++if ("amd" IN_LIST TRITON_CODEGEN_BACKENDS)
++  list(APPEND _amd_test_libs TritonAMDGPUTestAnalysis)
++endif()
++
+ add_llvm_executable(triton-opt triton-opt.cpp PARTIAL_SOURCES_INTENDED)
+ 
+ # TODO: what's this?
+@@ -9,7 +15,7 @@ target_link_libraries(triton-opt PRIVATE
+   # tests
+   TritonTestAnalysis
+   TritonTestDialect
+-  TritonAMDGPUTestAnalysis
++  ${_amd_test_libs}
+   TritonTestProton
+   # MLIR core
+   MLIROptLib
+@@ -30,7 +36,7 @@ target_link_libraries(triton-reduce PRIVATE
+   # tests
+   TritonTestAnalysis
+   TritonTestDialect
+-  TritonAMDGPUTestAnalysis
++  ${_amd_test_libs}
+   TritonTestProton
+   # MLIR core
+   MLIRReduceLib
+@@ -50,7 +56,7 @@ target_link_libraries(triton-lsp PRIVATE
+   # tests
+   TritonTestAnalysis
+   TritonTestDialect
+-  TritonAMDGPUTestAnalysis
++  ${_amd_test_libs}
+   TritonTestProton
+   # MLIR core
+   MLIRLspServerLib
+@@ -89,7 +95,7 @@ target_link_libraries(triton-tensor-layout PRIVATE
+   TritonTestAnalysis
+   TritonTestDialect
+   TritonTestProton
+-  TritonAMDGPUTestAnalysis
++  ${_amd_test_libs}
+   MLIRRegisterAllDialects
+   MLIRRegisterAllPasses
+   MLIRTransforms
+diff --git a/bin/RegisterTritonDialects.h b/bin/RegisterTritonDialects.h
+index cae14e85f..3892d7d9e 100644
+--- a/bin/RegisterTritonDialects.h
++++ b/bin/RegisterTritonDialects.h
+@@ -1,8 +1,12 @@
+ #pragma once
++#ifdef TRITON_ENABLE_AMD
+ #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
+ #include "amd/include/TritonAMDGPUTransforms/Passes.h"
++#endif
++#ifdef TRITON_ENABLE_NVIDIA
+ #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
+ #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
++#endif
+ #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
+ #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonAMDGPUToLLVM/Passes.h"
+ #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/Passes.h"
+@@ -14,22 +18,30 @@
+ #include "triton/Dialect/Triton/IR/Dialect.h"
+ #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+ #include "triton/Dialect/TritonInstrument/IR/Dialect.h"
++#ifdef TRITON_ENABLE_NVIDIA
+ #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
++#endif
+ 
+ // Below headers will allow registration to ROCm passes
++#ifdef TRITON_ENABLE_AMD
+ #include "TritonAMDGPUToLLVM/Passes.h"
+ #include "TritonAMDGPUTransforms/Passes.h"
+ #include "TritonAMDGPUTransforms/TritonGPUConversion.h"
++#endif
+ 
+ #include "triton/Dialect/Triton/Transforms/Passes.h"
+ #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+ #include "triton/Dialect/TritonInstrument/Transforms/Passes.h"
++#ifdef TRITON_ENABLE_NVIDIA
+ #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
++#endif
+ 
++#ifdef TRITON_ENABLE_NVIDIA
+ #include "nvidia/hopper/include/Transforms/Passes.h"
+ #include "nvidia/include/Dialect/NVWS/Transforms/Passes.h"
+ #include "nvidia/include/NVGPUToLLVM/Passes.h"
+ #include "nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h"
++#endif
+ #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
+ #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+ #include "triton/Target/LLVMIR/Passes.h"
+@@ -42,11 +54,15 @@ namespace mlir {
+ namespace test {
+ void registerTestAliasPass();
+ void registerTestAlignmentPass();
++#ifdef TRITON_ENABLE_AMD
+ void registerAMDTestAlignmentPass();
++#endif
+ void registerTestAllocationPass();
+ void registerTestMembarPass();
++#ifdef TRITON_ENABLE_AMD
+ void registerTestAMDGPUMembarPass();
+ void registerTestTritonAMDGPURangeAnalysis();
++#endif
+ void registerTestLoopPeelingPass();
+ namespace proton {
+ void registerTestScopeIdAllocationPass();
+@@ -58,17 +74,23 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
+   mlir::registerAllPasses();
+   mlir::triton::registerTritonPasses();
+   mlir::triton::gpu::registerTritonGPUPasses();
++#ifdef TRITON_ENABLE_NVIDIA
+   mlir::triton::nvidia_gpu::registerTritonNvidiaGPUPasses();
++#endif
+   mlir::triton::instrument::registerTritonInstrumentPasses();
+   mlir::triton::gluon::registerGluonPasses();
+   mlir::test::registerTestAliasPass();
+   mlir::test::registerTestAlignmentPass();
++#ifdef TRITON_ENABLE_AMD
+   mlir::test::registerAMDTestAlignmentPass();
++#endif
+   mlir::test::registerTestAllocationPass();
+   mlir::test::registerTestMembarPass();
+   mlir::test::registerTestLoopPeelingPass();
++#ifdef TRITON_ENABLE_AMD
+   mlir::test::registerTestAMDGPUMembarPass();
+   mlir::test::registerTestTritonAMDGPURangeAnalysis();
++#endif
+   mlir::triton::registerConvertTritonToTritonGPUPass();
+   mlir::triton::registerRelayoutTritonGPUPass();
+   mlir::triton::gpu::registerAllocateSharedMemoryPass();
+@@ -76,10 +98,13 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
+   mlir::triton::gpu::registerTritonGPUGlobalScratchAllocationPass();
+   mlir::triton::registerConvertWarpSpecializeToLLVM();
+   mlir::triton::registerConvertTritonGPUToLLVMPass();
++#ifdef TRITON_ENABLE_NVIDIA
+   mlir::triton::registerConvertNVGPUToLLVMPass();
+   mlir::triton::registerAllocateSharedMemoryNvPass();
++#endif
+   mlir::registerLLVMDIScope();
+ 
++#ifdef TRITON_ENABLE_AMD
+   // TritonAMDGPUToLLVM passes
+   mlir::triton::registerAllocateAMDGPUSharedMemory();
+   mlir::triton::registerConvertTritonAMDGPUToLLVM();
+@@ -102,18 +127,25 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
+   mlir::triton::registerTritonAMDGPULowerInstructionSchedHints();
+   mlir::registerTritonAMDFoldTrueCmpI();
+   mlir::triton::amdgpu::registerTritonAMDGPUOptimizeDotOperands();
++#endif
+ 
++#ifdef TRITON_ENABLE_NVIDIA
+   // NVWS passes
+   mlir::triton::registerNVWSTransformsPasses();
+ 
+   // NVGPU transform passes
+   mlir::registerNVHopperTransformsPasses();
++#endif
+ 
+   // Proton passes
+   mlir::test::proton::registerTestScopeIdAllocationPass();
+   mlir::triton::proton::registerConvertProtonToProtonGPU();
++#ifdef TRITON_ENABLE_NVIDIA
+   mlir::triton::proton::gpu::registerConvertProtonNvidiaGPUToLLVM();
++#endif
++#ifdef TRITON_ENABLE_AMD
+   mlir::triton::proton::gpu::registerConvertProtonAMDGPUToLLVM();
++#endif
+   mlir::triton::proton::gpu::registerAllocateProtonSharedMemoryPass();
+   mlir::triton::proton::gpu::registerAllocateProtonGlobalScratchBufferPass();
+   mlir::triton::proton::gpu::registerScheduleBufferStorePass();
+@@ -121,13 +153,19 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
+ 
+   registry.insert<
+       mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
++#ifdef TRITON_ENABLE_NVIDIA
+       mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
++#endif
+       mlir::triton::gpu::TritonGPUDialect,
+       mlir::triton::instrument::TritonInstrumentDialect,
+       mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,
+       mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
++#ifdef TRITON_ENABLE_NVIDIA
+       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
++#endif
++#ifdef TRITON_ENABLE_AMD
+       mlir::triton::amdgpu::TritonAMDGPUDialect,
++#endif
+       mlir::triton::proton::ProtonDialect,
+       mlir::triton::proton::gpu::ProtonGPUDialect, mlir::ROCDL::ROCDLDialect,
+       mlir::triton::gluon::GluonDialect>();
+diff --git a/lib/Dialect/TritonGPU/Transforms/CMakeLists.txt b/lib/Dialect/TritonGPU/Transforms/CMakeLists.txt
+index f3e0e2acf..65fa1990c 100644
+--- a/lib/Dialect/TritonGPU/Transforms/CMakeLists.txt
++++ b/lib/Dialect/TritonGPU/Transforms/CMakeLists.txt
+@@ -46,9 +46,9 @@ add_triton_library(TritonGPUTransforms
+   TritonTransforms
+   TritonGPUIR
+   TritonNvidiaGPUIR
+-  NVWSIR
+-  NVWSTransforms
+   TritonToTritonGPU
+   TritonInstrumentIR
+   MLIRTransformUtils
++  NVWSIR
++  NVWSTransforms
+ )
+diff --git a/python/src/gluon_ir.cc b/python/src/gluon_ir.cc
+index 00033c0fc..0a0677ea8 100644
+--- a/python/src/gluon_ir.cc
++++ b/python/src/gluon_ir.cc
+@@ -4,7 +4,9 @@
+ 
+ #include "mlir/IR/BuiltinTypes.h"
+ #include "mlir/IR/Types.h"
++#ifdef TRITON_ENABLE_AMD
+ #include "third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
++#endif
+ #include "triton/Analysis/Utility.h"
+ #include "triton/Dialect/Gluon/IR/Dialect.h"
+ #include "triton/Dialect/TritonGPU/IR/Attributes.h"
+@@ -20,7 +22,9 @@ namespace tt = triton;
+ namespace ttg = triton::gpu;
+ namespace ttng = triton::nvidia_gpu;
+ namespace gluon = mlir::triton::gluon;
++#ifdef TRITON_ENABLE_AMD
+ namespace ttag = mlir::triton::amdgpu;
++#endif
+ 
+ // Helper to check if an MLIR type or attribute has a verifier method.
+ template <typename AttrOrType>
+@@ -103,8 +107,6 @@ struct GluonLayouts {
+   GluonLayouts() {
+     auto layouts =
+         py::module::import("triton.experimental.gluon.language._layouts");
+-    auto amdLayouts =
+-        py::module::import("triton.experimental.gluon.language.amd._layouts");
+     AutoLayout = py::object(layouts.attr("AutoLayout")).release();
+     BlockedLayout = py::object(layouts.attr("BlockedLayout")).release();
+     SliceLayout = py::object(layouts.attr("SliceLayout")).release();
+@@ -116,7 +118,11 @@ struct GluonLayouts {
+     NVMMASharedLayout = py::object(layouts.attr("NVMMASharedLayout")).release();
+     SwizzledSharedLayout =
+         py::object(layouts.attr("SwizzledSharedLayout")).release();
++#ifdef TRITON_ENABLE_AMD
++    auto amdLayouts =
++        py::module::import("triton.experimental.gluon.language.amd._layouts");
+     AMDMFMALayout = py::object(amdLayouts.attr("AMDMFMALayout")).release();
++#endif
+     PaddedSharedLayout =
+         py::object(layouts.attr("PaddedSharedLayout")).release();
+ 
+@@ -199,6 +205,7 @@ py::object layoutToGluon(Attribute layout) {
+         toStdVector(ctaLayout.getCTAOrder()));
+   } else if (auto autoEnc = dyn_cast<gluon::AutoEncodingAttr>(layout)) {
+     return layouts.AutoLayout();
++#ifdef TRITON_ENABLE_AMD
+   } else if (auto amdMfma = dyn_cast<ttg::AMDMfmaEncodingAttr>(layout)) {
+     auto ctaLayout = amdMfma.getCTALayout();
+     std::vector<unsigned> instrShape{amdMfma.getMDim(), amdMfma.getNDim()};
+@@ -224,6 +231,7 @@ py::object layoutToGluon(Attribute layout) {
+         toStdVector(ctaLayout.getCTAsPerCGA()),
+         toStdVector(ctaLayout.getCTASplitNum()),
+         toStdVector(ctaLayout.getCTAOrder()));
++#endif
+   } else if (auto paddedShared =
+                  dyn_cast<ttg::PaddedSharedEncodingAttr>(layout)) {
+     auto ctaLayout = paddedShared.getCTALayout();
+@@ -338,6 +346,7 @@ void init_gluon_ir(py::module &&m) {
+                  ctx, version[0], version[1], warpsPerCta, ctaLayout,
+                  instrShape);
+            })
++#ifdef TRITON_ENABLE_AMD
+       .def("get_amd_mfma_layout",
+            [](GluonOpBuilder &self, unsigned version,
+               std::vector<unsigned> &instrShape, bool transposed,
+@@ -353,6 +362,7 @@ void init_gluon_ir(py::module &&m) {
+                  ctx, version, warpsPerCta, tilesPerWarp, instrShape[0],
+                  instrShape[1], transposed, ctaLayout, elemType);
+            })
++#endif
+       .def("get_padded_shared_layout",
+            [](GluonOpBuilder &self, std::vector<unsigned> &intervals,
+               std::vector<unsigned> &paddings, std::vector<unsigned> &order,
+@@ -667,6 +677,7 @@ void init_gluon_ir(py::module &&m) {
+              return self.create<ttg::WarpSpecializeOp>(
+                  resultTypes, explicitCaptures, partitionNumWarps);
+            })
++#ifdef TRITON_ENABLE_AMD
+       .def("create_buffer_load",
+            [](GluonOpBuilder &self, Type resultType, Value ptr, Value offsets,
+               Value mask, Value other, tt::CacheModifier cache) -> Value {
+@@ -686,7 +697,9 @@ void init_gluon_ir(py::module &&m) {
+               tt::CacheModifier cacheModifier) {
+              self.create<ttag::BufferLoadToLocalOp>(
+                  dest, ptr, offsets, mask, other, stride, cacheModifier);
+-           });
++           })
++#endif
++      ;
+ 
+   py::class_<ttg::WarpSpecializeOp, OpState>(m, "WarpSpecializeOp",
+                                              py::module_local())
+diff --git a/setup.py b/setup.py
+index dffc45ab1..05da6357d 100644
+--- a/setup.py
++++ b/setup.py
+@@ -461,7 +461,9 @@ class CMakeBuild(build_ext):
+             "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable, "-DPython3_INCLUDE_DIR=" + python_include_dir,
+             "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),
+             "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external]),
+-            "-DTRITON_WHEEL_DIR=" + wheeldir
++            "-DTRITON_WHEEL_DIR=" + wheeldir,
++            # Unit tests hard-code links to NV/AMD libs; disable when no GPU backends are active.
++            "-DTRITON_BUILD_UT=" + ("ON" if any(not b.is_external for b in backends) else "OFF"),
+         ]
+         if lit_dir is not None:
+             cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
+@@ -603,8 +605,8 @@ def download_and_copy_dependencies():
+     )
+ 
+ 
+-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+-
++# backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
++backends = [*BackendInstaller.copy_externals()]
+ 
+ def get_package_dirs():
+     yield ("", "python")
+diff --git a/third_party/proton/CMakeLists.txt b/third_party/proton/CMakeLists.txt
+index abd90d689..9e6d01dc7 100644
+--- a/third_party/proton/CMakeLists.txt
++++ b/third_party/proton/CMakeLists.txt
+@@ -53,7 +53,9 @@ add_subdirectory("${PROTON_COMMON_DIR}")
+ add_subdirectory("${PROTON_SRC_DIR}")
+ 
+ # ============ Add subdirectory with proton tests ============
+-add_subdirectory(test)
++if (TRITON_BUILD_UT)
++  add_subdirectory(test)
++endif()
+ 
+ # ============ Possibly handle macOS specifics ============
+ if(APPLE)
+diff --git a/third_party/proton/Dialect/CMakeLists.txt b/third_party/proton/Dialect/CMakeLists.txt
+index 9ef6bdc31..3f9bca4a0 100644
+--- a/third_party/proton/Dialect/CMakeLists.txt
++++ b/third_party/proton/Dialect/CMakeLists.txt
+@@ -2,7 +2,16 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+ include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
+ add_subdirectory(include)
+ add_subdirectory(lib)
+-if(TRITON_BUILD_PYTHON_MODULE)
+-  add_triton_plugin(TritonProton ${CMAKE_CURRENT_SOURCE_DIR}/triton_proton.cc LINK_LIBS ProtonToProtonGPU ProtonGPUToLLVM ProtonAMDGPUToLLVM ProtonNVIDIAGPUToLLVM ProtonAnalysis)
++# triton_proton.cc includes AMD/NV-specific headers; only build when a GPU backend is active.
++if(TRITON_BUILD_PYTHON_MODULE AND TRITON_CODEGEN_BACKENDS)
++  set(_proton_nv_libs "")
++  set(_proton_amd_libs "")
++  if ("nvidia" IN_LIST TRITON_CODEGEN_BACKENDS)
++    set(_proton_nv_libs ProtonNVIDIAGPUToLLVM)
++  endif()
++  if ("amd" IN_LIST TRITON_CODEGEN_BACKENDS)
++    set(_proton_amd_libs ProtonAMDGPUToLLVM)
++  endif()
++  add_triton_plugin(TritonProton ${CMAKE_CURRENT_SOURCE_DIR}/triton_proton.cc LINK_LIBS ProtonToProtonGPU ProtonGPUToLLVM ${_proton_amd_libs} ${_proton_nv_libs} ProtonAnalysis)
+   target_link_libraries(TritonProton PRIVATE Python3::Module pybind11::headers)
+ endif()
+diff --git a/third_party/proton/Dialect/lib/ProtonGPUToLLVM/CMakeLists.txt b/third_party/proton/Dialect/lib/ProtonGPUToLLVM/CMakeLists.txt
+index e3d89b8c5..c2773477b 100644
+--- a/third_party/proton/Dialect/lib/ProtonGPUToLLVM/CMakeLists.txt
++++ b/third_party/proton/Dialect/lib/ProtonGPUToLLVM/CMakeLists.txt
+@@ -13,5 +13,9 @@ add_triton_library(ProtonGPUToLLVM
+     ProtonAnalysis
+ )
+ 
+-add_subdirectory(ProtonNvidiaGPUToLLVM)
+-add_subdirectory(ProtonAMDGPUToLLVM)
++if ("nvidia" IN_LIST TRITON_CODEGEN_BACKENDS)
++  add_subdirectory(ProtonNvidiaGPUToLLVM)
++endif()
++if ("amd" IN_LIST TRITON_CODEGEN_BACKENDS)
++  add_subdirectory(ProtonAMDGPUToLLVM)
++endif()

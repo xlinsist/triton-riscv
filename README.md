@@ -56,6 +56,99 @@ pip3 install -e . --no-build-isolation
 
 The resulting `triton-shared` binaries will be placed under `triton/build/{current_cmake_version}/third_party/triton_shared`
 
+### CPU-only build (no NVIDIA / AMD backends)
+
+This configuration lets triton act purely as a frontend (Python AST → TTIR) while
+triton-shared handles all subsequent compilation stages (TTIR → Linalg → LLVM IR → native object).
+No NVIDIA or AMD toolchain is required.
+
+**Compilation pipeline:**
+```
+Python @triton.jit
+  └─► TTIR          (triton: ast_to_ttir + make_ttir passes)
+        └─► Linalg MLIR   (triton-shared-opt --triton-to-linalg-experimental)
+              └─► LLVM MLIR  (mlir-opt lowering passes)
+                    └─► LLVM IR  (mlir-translate --mlir-to-llvmir)
+                          └─► native .o  (llc -filetype=obj)
+```
+
+---
+
+**Step 1 – clone and pin triton to the tested commit**
+
+```sh
+git clone https://github.com/microsoft/triton-shared.git triton_shared
+git clone https://github.com/triton-lang/triton.git
+cd triton && git checkout $(cat ../triton_shared/triton-hash.txt)
+```
+
+**Step 2 – apply the build-system patches**
+
+The patches live in `triton_shared/patches/` and are applied with the helper script.
+They make the NVIDIA/AMD LLVM codegen libraries conditional on the respective backends
+actually being enabled, so the build succeeds without any GPU toolchain.
+
+```sh
+# from the directory that contains both repos
+triton_shared/scripts/apply_patches.sh triton
+```
+
+The script is idempotent: running it again on an already-patched tree prints
+`SKIPPED (patch already applied)` for each patch and exits cleanly.
+
+**Step 3 – build**
+
+```sh
+cd triton
+
+# Point triton's plugin discovery at triton_shared.
+export TRITON_PLUGIN_DIRS=/path/to/triton_shared
+
+# (Optional) Use a custom LLVM build instead of the one triton downloads.
+# The build directory must contain lib/ and bin/ sub-directories.
+export LLVM_SYSPATH=/path/to/llvm/build   # e.g. /home/user/buddy-mlir/llvm/build
+
+# Install (no GPU backends are compiled; triton_shared is the only backend).
+pip install --no-build-isolation -vvv .
+```
+
+> **Tip – incremental rebuilds**: After the first full build you can skip the
+> slow cmake reconfigure by rebuilding directly in the cmake output directory:
+>
+> ```sh
+> BUILD_DIR=$(ls -d build/cmake.linux-*-cpython-*)
+> cmake --build $BUILD_DIR -j$(nproc)
+> # then re-install so the new .so is picked up by Python:
+> pip install --no-build-isolation -q .
+> ```
+
+**Step 4 – set runtime environment variables**
+
+```sh
+# Path to the triton-shared-opt binary produced by the build.
+BUILD_DIR=$(ls -d build/cmake.linux-*-cpython-*)
+export TRITON_SHARED_OPT_PATH=$(pwd)/${BUILD_DIR}/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt
+
+# Directory that contains mlir-opt, mlir-translate, and llc.
+# When using a custom LLVM build point this at its bin/ directory.
+export LLVM_BINARY_DIR=/path/to/llvm/build/bin   # e.g. /home/user/buddy-mlir/llvm/build/bin
+```
+
+**Step 5 – run the example test suite**
+
+```sh
+cd ..   # back to the directory that contains triton_shared/
+pytest triton_shared/python/examples -x -v
+```
+
+To run a single test quickly:
+
+```sh
+pytest triton_shared/python/examples/test_vec_add.py -v
+```
+
+---
+
 ### 1. Stand-Alone
 The middle layer can be used as a stand-alone component to convert Triton dialect to the middle layer dialects. This is intended for testing and validation purposes, but could potentially be used before sending the IR to another MLIR complier.
 

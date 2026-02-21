@@ -15,8 +15,13 @@ target_link_libraries(triton-shared-opt PRIVATE
   # MLIR core
   MLIROptLib
   MLIRPass
-  MLIRRegisterAllPasses
   MLIRTransforms
 )
+
+# Note: MLIRRegisterAllPasses and NVGPUIR are symbol libraries that may not exist
+# MLIRRegisterAllPasses is provided by LLVM but may not be available in all builds
+# NVGPUIR is only built when nvidia backend is enabled
+# Allow undefined symbols for these optional libraries
+target_link_options(triton-shared-opt PRIVATE -Wl,--allow-shlib-undefined)
 
 mlir_check_all_link_libraries(triton-shared-opt)
