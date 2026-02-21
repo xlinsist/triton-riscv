@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 47a0f3b17..046ecad17 100644
+index 47a0f3b17..9e4f8550b 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -159,6 +159,19 @@ include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
@@ -75,7 +75,19 @@ index 47a0f3b17..046ecad17 100644
    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
       CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
       CMAKE_OSX_ARCHITECTURES MATCHES "arm64")  # also macOS arm64
-@@ -283,6 +318,17 @@ if(TRITON_BUILD_PYTHON_MODULE)
+@@ -268,6 +303,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
+         LLVMPowerPCAsmParser
+         LLVMPowerPCCodeGen
+       )
++  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64")
++      list(APPEND TRITON_LIBRARIES
++        LLVMRISCVCodeGen
++        LLVMRISCVAsmParser
++      )
+   else()
+     message(FATAL_ERROR "LLVM codegen/ASM parser libs: This HW architecture (${CMAKE_SYSTEM_PROCESSOR}) is not configured in cmake lib dependencies.")
+   endif()
+@@ -283,6 +323,17 @@ if(TRITON_BUILD_PYTHON_MODULE)
  
    set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
    add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
@@ -93,7 +105,7 @@ index 47a0f3b17..046ecad17 100644
    add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                    ${PYTHON_SRC_PATH}/ir.cc
                    ${PYTHON_SRC_PATH}/gluon_ir.cc
-@@ -341,8 +387,11 @@ endif()
+@@ -341,8 +392,11 @@ endif()
  find_package(Threads REQUIRED)
  
  add_subdirectory(third_party/f2reduce)
