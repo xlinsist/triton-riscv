@@ -6,6 +6,7 @@ from types import ModuleType
 import hashlib
 import tempfile
 import os
+import platform
 import re
 import shutil
 import subprocess
