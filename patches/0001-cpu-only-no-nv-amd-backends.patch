@@ -420,10 +420,20 @@ index 00033c0fc..0a0677ea8 100644
    py::class_<ttg::WarpSpecializeOp, OpState>(m, "WarpSpecializeOp",
                                               py::module_local())
 diff --git a/setup.py b/setup.py
-index dffc45ab1..05da6357d 100644
+index dffc45ab1..a45baa064 100644
 --- a/setup.py
 +++ b/setup.py
-@@ -461,7 +461,9 @@ class CMakeBuild(build_ext):
+@@ -401,7 +401,8 @@ class CMakeBuild(build_ext):
+         build_ext.finalize_options(self)
+ 
+     def run(self):
+-        download_and_copy_dependencies()
++        if any(b.name == "nvidia" for b in backends):
++            download_and_copy_dependencies()
+ 
+         try:
+             out = subprocess.check_output(["cmake", "--version"])
+@@ -461,7 +462,9 @@ class CMakeBuild(build_ext):
              "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable, "-DPython3_INCLUDE_DIR=" + python_include_dir,
              "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),
              "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external]),
@@ -434,7 +444,7 @@ index dffc45ab1..05da6357d 100644
          ]
          if lit_dir is not None:
              cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
-@@ -603,8 +605,8 @@ def download_and_copy_dependencies():
+@@ -603,8 +606,8 @@ def download_and_copy_dependencies():
      )
  
  
