@@ -170,7 +170,13 @@ def _llir_to_bin(llir: str, metadata):
             subprocess.check_call(subprocess_args)
         else:
             llc_path = _get_llvm_bin_path("llc")
-            subprocess.check_call([llc_path, src_path, "-filetype=obj", "-relocation-model=pic", "-o", dst_path])
+            llc_args = [llc_path, src_path, "-filetype=obj", "-relocation-model=pic", "-o", dst_path]
+            # On RISC-V Linux, the system ABI is lp64d (hardware double-precision float).
+            # Without explicitly enabling +f,+d, llc defaults to soft-float, causing
+            # "can't link soft-float modules with double-float modules" linker errors.
+            if platform.machine() == "riscv64":
+                llc_args.extend(["-mattr=+m,+a,+f,+d,+c,+v"])
+            subprocess.check_call(llc_args)
         
         return Path(dst_path).read_bytes()
 
