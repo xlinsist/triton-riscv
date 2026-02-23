@@ -20,11 +20,12 @@ def addptr(in0, out0):
         tl.store(out2, a2)
 
 
-
 def test(device):
     input = torch.arange(0, 11, device=device, dtype=torch.float32)
     output = torch.full((11,), 0, device=device, dtype=torch.float32)
-    grid = lambda meta: (1,)
+
+    def grid(meta):
+        return (1,)
 
     print(output)
     addptr[grid](input, output)

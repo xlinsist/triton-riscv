@@ -3,9 +3,11 @@ import triton
 import triton.language as tl
 
 from triton.backends.triton_shared.driver import CPUDriver
+
 triton.runtime.driver.set_active(CPUDriver())
 
 # Data race pair: any two program ids at line 28
+
 
 @triton.jit
 def kernel(output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
@@ -22,14 +24,19 @@ def kernel(output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
 
     # store BLOCK_SIZE values containing pid into the output_ptr
     # this is so that the values stored by the program are different
-    output = tl.full((BLOCK_SIZE, ), pid, dtype=tl.float16)
-    
+    output = tl.full((BLOCK_SIZE,), pid, dtype=tl.float16)
+
     # the race will occur between the programs here
     tl.store(output_ptr + offsets, output, mask=mask)
 
+
 size = 256
 
-output = torch.empty((size, )).to("cpu") # initialize GPU tensor with one extra element
+output = torch.empty((size,)).to("cpu")  # initialize GPU tensor with one extra element
 
-grid = lambda meta: (triton.cdiv(size, meta['BLOCK_SIZE']), )
+
+def grid(meta):
+    return (triton.cdiv(size, meta["BLOCK_SIZE"]),)
+
+
 kernel[grid](output, size, BLOCK_SIZE=2)

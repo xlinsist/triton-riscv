@@ -48,15 +48,15 @@ def _layer_norm_fwd_fused(
     _mean = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
     for off in range(0, N, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
-        a = tl.load(X + cols, mask=cols < N, other=0.).to(tl.float32)
+        a = tl.load(X + cols, mask=cols < N, other=0.0).to(tl.float32)
         _mean += a
     mean = tl.sum(_mean, axis=0) / N
     # Compute variance
     _var = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
     for off in range(0, N, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
-        x = tl.load(X + cols, mask=cols < N, other=0.).to(tl.float32)
-        x = tl.where(cols < N, x - mean, 0.)
+        x = tl.load(X + cols, mask=cols < N, other=0.0).to(tl.float32)
+        x = tl.where(cols < N, x - mean, 0.0)
         _var += x * x
     var = tl.sum(_var, axis=0) / N
     rstd = 1 / tl.sqrt(var + eps)
@@ -69,7 +69,7 @@ def _layer_norm_fwd_fused(
         mask = cols < N
         w = tl.load(W + cols, mask=mask)
         b = tl.load(B + cols, mask=mask)
-        x = tl.load(X + cols, mask=mask, other=0.).to(tl.float32)
+        x = tl.load(X + cols, mask=mask, other=0.0).to(tl.float32)
         x_hat = (x - mean) * rstd
         y = x_hat * w + b
         # Write output
@@ -85,8 +85,8 @@ class LayerNorm(torch.autograd.Function):
         # reshape input data into 2D tensor
         x_arg = x.reshape(-1, x.shape[-1])
         M, N = x_arg.shape
-        mean = torch.empty((M, ), dtype=torch.float32, device=device)
-        rstd = torch.empty((M, ), dtype=torch.float32, device=device)
+        mean = torch.empty((M,), dtype=torch.float32, device=device)
+        rstd = torch.empty((M,), dtype=torch.float32, device=device)
         # Less than 64KB per feature: enqueue fused kernel
         MAX_FUSED_SIZE = 65536 // x.element_size()
         BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(N))
@@ -95,10 +95,20 @@ class LayerNorm(torch.autograd.Function):
         # heuristics for number of warps
         num_warps = min(max(BLOCK_SIZE // 256, 1), 8)
         # enqueue kernel
-        _layer_norm_fwd_fused[(M, )](  #
-            x_arg, y, weight, bias, mean, rstd,  #
-            x_arg.stride(0), N, eps,  #
-            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_ctas=1)
+        _layer_norm_fwd_fused[(M,)](  #
+            x_arg,
+            y,
+            weight,
+            bias,
+            mean,
+            rstd,  #
+            x_arg.stride(0),
+            N,
+            eps,  #
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_ctas=1,
+        )
         ctx.save_for_backward(x, weight, bias, mean, rstd)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
@@ -106,48 +116,51 @@ class LayerNorm(torch.autograd.Function):
         return y
 
 
-@pytest.mark.parametrize("M, N, dtype, eps", [  #
-    (M, N, dtype, eps)
-    for M in [1151]
-    for N in [8192]
-    for dtype in [torch.float16]
-    for eps in [1e-5]
-])
+@pytest.mark.parametrize(
+    "M, N, dtype, eps",
+    [  #
+        (M, N, dtype, eps)
+        for M in [1151]
+        for N in [8192]
+        for dtype in [torch.float16]
+        for eps in [1e-5]
+    ],
+)
 def test_layer_norm(M, N, dtype, eps, device):
     layer_norm = LayerNorm.apply
     # create data
     x_shape = (M, N)
-    w_shape = (x_shape[-1], )
+    w_shape = (x_shape[-1],)
     weight = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)
     bias = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)
     x = -2.3 + 0.5 * torch.randn(x_shape, dtype=dtype, device=device)
-    dy = .1 * torch.randn_like(x)
+    dy = 0.1 * torch.randn_like(x)
     x.requires_grad_(False)
 
     # forward pass
     y_tri = layer_norm(x, w_shape, weight, bias, eps, device)
     # TODO We can't compare against Torch layer_norm since it doesn't support float16 on CPU
-    #y_ref = torch.nn.functional.layer_norm(x, w_shape, weight, bias, eps).to(dtype)
+    # y_ref = torch.nn.functional.layer_norm(x, w_shape, weight, bias, eps).to(dtype)
 
     print(y_tri)
-    #print(y_ref)
+    # print(y_ref)
 
     # compare
-    #assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)
+    # assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)
 
 
 @benchmark.measure()
 def bench_layernorm(size, provider):
     layer_norm = LayerNorm.apply
-    device = 'cpu'
+    device = "cpu"
     eps = 1e-5
     dtype = torch.float16
     x_shape = (size, size)
-    w_shape = (x_shape[-1], )
+    w_shape = (x_shape[-1],)
     weight = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)
     bias = torch.rand(w_shape, dtype=dtype, device=device, requires_grad=False)
     x = -2.3 + 0.5 * torch.randn(x_shape, dtype=dtype, device=device)
-    dy = .1 * torch.randn_like(x)
+    dy = 0.1 * torch.randn_like(x)
     x.requires_grad_(False)
     # forward pass
     y_tri = layer_norm(x, w_shape, weight, bias, eps, device)
@@ -156,5 +169,5 @@ def bench_layernorm(size, provider):
 if __name__ == "__main__":
     benchmark.select_cpu_backend()
     for X in [2**i for i in range(10, 13, 1)]:
-        for provider in ['triton']:
+        for provider in ["triton"]:
             bench_layernorm(X, provider)

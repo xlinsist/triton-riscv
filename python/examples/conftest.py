@@ -107,19 +107,31 @@ def pytest_collection_modifyitems(config, items):
         test_func_name = item.originalname if item.originalname else item.name
 
         test_file = str(item.fspath)
-        if test_file.endswith("test_core.py") and test_func_name not in core_tests_supported:
+        if (
+            test_file.endswith("test_core.py")
+            and test_func_name not in core_tests_supported
+        ):
             item.add_marker(skip_marker)
             continue
 
-        if test_file.endswith("test_annotations.py") and test_func_name not in annotations_tests_supported:
+        if (
+            test_file.endswith("test_annotations.py")
+            and test_func_name not in annotations_tests_supported
+        ):
             item.add_marker(skip_marker)
             continue
 
         if "parametrize" in item.keywords:
             for param_name, param_value in item.callspec.params.items():
-                if (param_name.startswith('dtype') or param_name.endswith('dtype')) and param_value == 'bfloat16':
+                if (
+                    param_name.startswith("dtype") or param_name.endswith("dtype")
+                ) and param_value == "bfloat16":
                     item.add_marker(skip_marker_bfloat)
-                if param_name.startswith('input_precision') and param_value.startswith('tf32'):
+                if param_name.startswith("input_precision") and param_value.startswith(
+                    "tf32"
+                ):
                     item.add_marker(skip_marker_tf32)
-                if (param_name.startswith('dtype') or param_name.endswith('dtype')) and ('float8' in str(param_value)):
+                if (
+                    param_name.startswith("dtype") or param_name.endswith("dtype")
+                ) and ("float8" in str(param_value)):
                     item.add_marker(skip_marker_float8)

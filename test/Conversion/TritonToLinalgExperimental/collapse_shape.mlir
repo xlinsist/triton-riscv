@@ -81,7 +81,7 @@ module {
   func.func @transpose() -> tensor<2x2x2x2x2x2x2x2x2x2xi64> {
     %0 = tensor.empty() : tensor<2x2x2x2x2x2x2x2x2x2xi64>
     %1 = tensor.empty() : tensor<2x2x2x2x2x2x2x2x2x2xi64>
-    %transposed = linalg.transpose ins(%0 : tensor<2x2x2x2x2x2x2x2x2x2xi64>) outs(%1 : tensor<2x2x2x2x2x2x2x2x2x2xi64>) permutation = [0, 1, 2, 3, 4, 5, 6, 7, 9, 8] 
+    %transposed = linalg.transpose ins(%0 : tensor<2x2x2x2x2x2x2x2x2x2xi64>) outs(%1 : tensor<2x2x2x2x2x2x2x2x2x2xi64>) permutation = [0, 1, 2, 3, 4, 5, 6, 7, 9, 8]
     return %transposed : tensor<2x2x2x2x2x2x2x2x2x2xi64>
   }
 }
@@ -104,7 +104,7 @@ module {
   func.func @reduce() -> tensor<2x2x2x2x2x2x2x2x2xi64> {
     %0 = tensor.empty() : tensor<2x2x2x2x2x2x2x2x2x2xi64>
     %1 = tensor.empty() : tensor<2x2x2x2x2x2x2x2x2xi64>
-    %reduced = linalg.reduce ins(%0 : tensor<2x2x2x2x2x2x2x2x2x2xi64>) outs(%1 : tensor<2x2x2x2x2x2x2x2x2xi64>) dimensions = [8] 
+    %reduced = linalg.reduce ins(%0 : tensor<2x2x2x2x2x2x2x2x2x2xi64>) outs(%1 : tensor<2x2x2x2x2x2x2x2x2xi64>) dimensions = [8]
       (%in: i64, %init: i64) {
         %2 = arith.xori %in, %init : i64
         linalg.yield %2 : i64

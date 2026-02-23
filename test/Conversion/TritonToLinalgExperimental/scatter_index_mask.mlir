@@ -129,5 +129,3 @@
     tt.store %29, %17, %30 : tensor<32x32x!tt.ptr<f32>>
     tt.return
   }
-
-

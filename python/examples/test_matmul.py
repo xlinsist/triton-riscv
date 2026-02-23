@@ -4,6 +4,7 @@ import triton
 import triton.language as tl
 import benchmark
 
+
 # `triton.jit`'ed functions can be auto-tuned by using the `triton.autotune` decorator, which consumes:
 #   - A list of `triton.Config` objects that define different configurations of
 #       meta-parameters (e.g., `BLOCK_SIZE_M`) and compilation options (e.g., `num_warps`) to try
@@ -32,20 +33,29 @@ import benchmark
 # )
 @triton.jit
 def matmul_kernel(
-        # Pointers to matrices
-        a_ptr, b_ptr, c_ptr,
-        # Matrix dimensions
-        M, N, K,
-        # The stride variables represent how much to increase the ptr by when moving by 1
-        # element in a particular dimension. E.g. `stride_am` is how much to increase `a_ptr`
-        # by to get the element one row down (A has M rows).
-        stride_am, stride_ak,  #
-        stride_bk, stride_bn,  #
-        stride_cm, stride_cn,
-        # Meta-parameters
-        BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
-        GROUP_SIZE_M: tl.constexpr,  #
-        ACTIVATION: tl.constexpr  #
+    # Pointers to matrices
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    # Matrix dimensions
+    M,
+    N,
+    K,
+    # The stride variables represent how much to increase the ptr by when moving by 1
+    # element in a particular dimension. E.g. `stride_am` is how much to increase `a_ptr`
+    # by to get the element one row down (A has M rows).
+    stride_am,
+    stride_ak,  #
+    stride_bk,
+    stride_bn,  #
+    stride_cm,
+    stride_cn,
+    # Meta-parameters
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,  #
+    GROUP_SIZE_M: tl.constexpr,  #
+    ACTIVATION: tl.constexpr,  #
 ):
     """Kernel for computing the matmul C = A x B.
     A has shape (M, K), B has shape (K, N) and C has shape (M, N)
@@ -108,7 +118,6 @@ def matmul_kernel(
     tl.store(c_ptrs, c, mask=c_mask)
 
 
-
 # We can fuse `leaky_relu` by providing it as an `ACTIVATION` meta-parameter in `_matmul`.
 @triton.jit
 def leaky_relu(x):
@@ -126,18 +135,30 @@ def matmul(a, b, activation=""):
     # Allocates output.
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
     # 1D launch kernel where each block gets its own program.
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
+
+    def grid(META):
+        return (
+            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        )
+
     matmul_kernel[grid](
-        a, b, c,  #
-        M, N, K,  #
-        a.stride(0), a.stride(1),  #
-        b.stride(0), b.stride(1),  #
-        c.stride(0), c.stride(1),  #
+        a,
+        b,
+        c,  #
+        M,
+        N,
+        K,  #
+        a.stride(0),
+        a.stride(1),  #
+        b.stride(0),
+        b.stride(1),  #
+        c.stride(0),
+        c.stride(1),  #
         ACTIVATION=activation,  #
         BLOCK_SIZE_M=32,
         BLOCK_SIZE_N=64,
         BLOCK_SIZE_K=16,
-        GROUP_SIZE_M=8
+        GROUP_SIZE_M=8,
     )
     return c
 
@@ -159,16 +180,16 @@ def test_matmul(device):
 
 @benchmark.measure()
 def bench_matmul(M, N, K, provider):
-    a = torch.randn((M, K), device='cpu', dtype=torch.float32)
-    b = torch.randn((K, N), device='cpu', dtype=torch.float32)
-    if provider == 'torch':
+    a = torch.randn((M, K), device="cpu", dtype=torch.float32)
+    b = torch.randn((K, N), device="cpu", dtype=torch.float32)
+    if provider == "torch":
         torch.matmul(a, b)
-    if provider == 'triton':
+    if provider == "triton":
         matmul(a, b)
 
 
 if __name__ == "__main__":
     benchmark.select_cpu_backend()
     for X in [128 * i for i in range(2, 7)]:
-        for provider in ['torch', 'triton']:
+        for provider in ["torch", "triton"]:
             bench_matmul(X, X, X, provider)

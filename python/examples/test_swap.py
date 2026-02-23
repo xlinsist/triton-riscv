@@ -9,6 +9,7 @@ import triton.language as tl
 # particularly when both arrays unintentionally end up with the same data due to
 # missing intermediate storage or mismanaged memory access.
 
+
 @triton.jit
 def swap_kernel(
     x_ptr,  # *Pointer* to first inout vector.
@@ -27,7 +28,10 @@ def swap_kernel(
 
 def swap(x: torch.Tensor, y: torch.Tensor):
     n_elements = x.numel()
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+
+    def grid(meta):
+        return (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+
     swap_kernel[grid](x, y, BLOCK_SIZE=1024)
 
 

@@ -26,7 +26,9 @@ def index_select_row_with_mod_kernel(
 
     col_offsets = tl.arange(0, BLOCK_N)
     input_pointers_0 = (
-        input_ptr + (row_indices[:, None] + row_offsets[:,None] % mod_offset) * stride_m + col_offsets[None, :] * stride_n
+        input_ptr
+        + (row_indices[:, None] + row_offsets[:, None] % mod_offset) * stride_m
+        + col_offsets[None, :] * stride_n
     )
     data = tl.load(input_pointers_0)
 
@@ -76,7 +78,9 @@ def test_index_select_row_with_mod(device):
     mod_offset = 2  # Modulo offset for the row indices
     output_triton = index_select_row_with_mod(input_tensor, indices, dim, mod_offset)
     # Adjust indices with modulo
-    adjusted_indices = indices + torch.arange(0, len(indices), device=device) % mod_offset
+    adjusted_indices = (
+        indices + torch.arange(0, len(indices), device=device) % mod_offset
+    )
     output_ref = torch.index_select(input_tensor, dim, adjusted_indices)
 
     torch.testing.assert_close(output_triton, output_ref)
@@ -102,7 +106,11 @@ def index_select_row_with_double_mod_kernel(
 
     col_offsets = tl.arange(0, BLOCK_N)
     input_pointers_0 = (
-        input_ptr + (row_indices[:, None] + row_offsets[:,None] % mod_offset) % mod_offset_2 * stride_m + col_offsets[None, :] * stride_n
+        input_ptr
+        + (row_indices[:, None] + row_offsets[:, None] % mod_offset)
+        % mod_offset_2
+        * stride_m
+        + col_offsets[None, :] * stride_n
     )
     data = tl.load(input_pointers_0)
 
@@ -114,7 +122,9 @@ def index_select_row_with_double_mod_kernel(
     )
 
 
-def index_select_row_with_double_mod(input_tensor, indices, dim, mod_offset, mod_offset_2):
+def index_select_row_with_double_mod(
+    input_tensor, indices, dim, mod_offset, mod_offset_2
+):
     M, N = input_tensor.shape
     R = indices.shape[0]
     output_tensor = torch.empty(
@@ -167,9 +177,13 @@ def test_index_select_row_with_double_mod(device):
         triton.runtime.driver.set_active(CPUDriver())
     mod_offset = 4  # Modulo offset for the row indices
     mod_offset_2 = 3  # Second modulo offset for the row indices
-    output_triton = index_select_row_with_double_mod(input_tensor, indices, dim, mod_offset, mod_offset_2)
+    output_triton = index_select_row_with_double_mod(
+        input_tensor, indices, dim, mod_offset, mod_offset_2
+    )
     # Adjust indices with modulo
-    adjusted_indices = (indices + torch.arange(0, len(indices), device=device) % mod_offset) % mod_offset_2
+    adjusted_indices = (
+        indices + torch.arange(0, len(indices), device=device) % mod_offset
+    ) % mod_offset_2
     output_ref = torch.index_select(input_tensor, dim, adjusted_indices)
 
     torch.testing.assert_close(output_triton, output_ref)
@@ -195,7 +209,10 @@ def index_select_row_with_double_mod_kernel2(
 
     col_offsets = tl.arange(0, BLOCK_N)
     input_pointers_0 = (
-        input_ptr + (row_indices[:, None] + (row_offsets[:,None] % mod_offset + mod_offset_2)) * stride_m + col_offsets[None, :] * stride_n
+        input_ptr
+        + (row_indices[:, None] + (row_offsets[:, None] % mod_offset + mod_offset_2))
+        * stride_m
+        + col_offsets[None, :] * stride_n
     )
     data = tl.load(input_pointers_0)
 
@@ -207,7 +224,9 @@ def index_select_row_with_double_mod_kernel2(
     )
 
 
-def index_select_row_with_double_mod2(input_tensor, indices, dim, mod_offset, mod_offset_2):
+def index_select_row_with_double_mod2(
+    input_tensor, indices, dim, mod_offset, mod_offset_2
+):
     M, N = input_tensor.shape
     R = indices.shape[0]
     output_tensor = torch.empty(
@@ -245,9 +264,13 @@ def test_index_select_row_with_double_mod2(device):
         triton.runtime.driver.set_active(CPUDriver())
     mod_offset = 4  # Modulo offset for the row indices
     mod_offset_2 = 1  # Second modulo offset for the row indices
-    output_triton = index_select_row_with_double_mod2(input_tensor, indices, dim, mod_offset, mod_offset_2)
+    output_triton = index_select_row_with_double_mod2(
+        input_tensor, indices, dim, mod_offset, mod_offset_2
+    )
     # Adjust indices with modulo
-    adjusted_indices = indices + ((torch.arange(0, len(indices), device=device) % mod_offset + mod_offset_2))
+    adjusted_indices = indices + (
+        (torch.arange(0, len(indices), device=device) % mod_offset + mod_offset_2)
+    )
     output_ref = torch.index_select(input_tensor, dim, adjusted_indices)
 
     torch.testing.assert_close(output_triton, output_ref)
@@ -416,9 +439,7 @@ def index_select_row_index_mask_kernel(
     input_pointers_0 = (
         input_ptr + row_indices[:, None] * stride_m + col_offsets[None, :] * stride_n
     )
-    data = tl.load(
-        input_pointers_0, mask=row_offsets[:, None] < index_limit, other=0
-    )
+    data = tl.load(input_pointers_0, mask=row_offsets[:, None] < index_limit, other=0)
 
     tl.store(
         output_ptr
@@ -466,7 +487,7 @@ def test_index_select_row_index_mask(device):
     index_limit = indices.shape[0] // 2
     output_triton = index_select_row_index_mask(input_tensor, indices, dim, index_limit)
     output_ref = torch.index_select(input_tensor, dim, indices)
-    output_ref[index_limit:,  :] = 0
+    output_ref[index_limit:, :] = 0
     torch.testing.assert_close(output_triton, output_ref)
 
 
@@ -1357,6 +1378,7 @@ def test_scatter_row_index_mask(device):
 
     output_ref = torch.scatter(dst, dim, row_indices, input_tensor)
     torch.testing.assert_close(output_triton, output_ref)
+
 
 @triton.jit
 def scatter_col_kernel(

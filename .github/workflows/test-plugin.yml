@@ -123,7 +123,7 @@ jobs:
       with:
         ref: ${{ inputs.triton-shared-ref }}
         path: triton_shared
-    
+
     - name: Checkout triton based on triton-hash.txt
       run: |
         git clone https://github.com/triton-lang/triton.git triton

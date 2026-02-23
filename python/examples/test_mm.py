@@ -1,14 +1,15 @@
-
 import torch
 import triton
 import pytest
 import triton.language as tl
 import benchmark
 
+
 @triton.jit
 def prev_multiple_of(a, b):
     # the largest x<a that x%b ==0
     return tl.cdiv(a, b) * b - b
+
 
 @triton.jit
 def mm_kernel(
@@ -62,12 +63,12 @@ def mm_kernel(
     a = tl.load(
         A + (ram[:, None] * stride_am + rk[None, :] * stride_ak),
         mask=mask_k[None, :],
-        other=0.0
+        other=0.0,
     )
     b = tl.load(
         B + (rk[:, None] * stride_bk + rbn[None, :] * stride_bn),
         mask=mask_k[:, None],
-        other=0.0
+        other=0.0,
     )
     if a.dtype != b.dtype:
         a = a.to(C.dtype.element_ty)
@@ -116,9 +117,9 @@ def mm(a, b):
     c_dtype = get_higher_dtype(a.dtype, b.dtype)
     c = torch.empty((M, N), device=device, dtype=c_dtype)
     # launch kernel
-    grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(N, META["BLOCK_N"]),
-    )
+
+    def grid(META):
+        return (triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(N, META["BLOCK_N"]),)
 
     mm_kernel[grid](
         a,
@@ -141,11 +142,12 @@ def mm(a, b):
 
     return c
 
+
 @pytest.mark.interpreter
 @pytest.mark.parametrize("M, N, K", [(1, 1, 32), (15, 160, 1024), (495, 5333, 71)])
 @pytest.mark.parametrize("dtype", [torch.float32])
 def test_accuracy_mm(M, N, K, dtype):
-    device = 'cpu'
+    device = "cpu"
     a = torch.randn((M, K), dtype=dtype, device=device)
     b = torch.randn((K, N), dtype=dtype, device=device)
 

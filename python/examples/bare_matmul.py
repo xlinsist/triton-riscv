@@ -25,21 +25,21 @@ def bare_matmul(X, Y, Z, M, N, K, BLOCK_SIZE: tl.constexpr):
 
 @benchmark.measure()
 def bench_matmul(N, provider):
-    device = 'cpu'
+    device = "cpu"
     dtype = torch.float32
     a = torch.randn((N, N), device=device, dtype=dtype)
     b = torch.randn((N, N), device=device, dtype=dtype)
     c = torch.empty((N, N), device=device, dtype=dtype)
-    if provider == 'torch' or provider == 'test':
+    if provider == "torch" or provider == "test":
         c_ref = torch.matmul(a, b)
-    if provider == 'triton' or provider == 'test':
+    if provider == "triton" or provider == "test":
         bare_matmul[(1,)](a, b, c, N, N, N, N)
-        if provider == 'test':
+        if provider == "test":
             torch.testing.assert_close(c, c_ref, atol=1e-2, rtol=0)
 
 
 if __name__ == "__main__":
     benchmark.select_cpu_backend()
     for X in [2**i for i in range(7, 10, 1)]:
-        for provider in ['test', 'torch', 'triton']:
+        for provider in ["test", "torch", "triton"]:
             bench_matmul(X, provider)

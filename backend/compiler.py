@@ -14,6 +14,7 @@ import functools
 import triton
 from pathlib import Path
 
+
 def _get_triton_shared_opt_path() -> str:
     path = os.getenv("TRITON_SHARED_OPT_PATH", "")
     if path == "":
@@ -35,6 +36,7 @@ def _dump_ir_if_needed(files):
     for f in files:
         shutil.copy(f, os.path.join(path, os.path.basename(f)))
 
+
 def _get_sanitizer_type():
     # returns "" if not set
     # throws error if set to something other than "asan" or "tsan"
@@ -43,8 +45,9 @@ def _get_sanitizer_type():
     if sanitizer_type != "" and sanitizer_type != "asan" and sanitizer_type != "tsan":
         # throw error
         raise Exception(f"TRITON_SHARED_SANITIZER_TYPE {sanitizer_type} is invalid.")
-    
+
     return sanitizer_type
+
 
 def _ttir_to_ttsharedir(mod):
     # Get Triton-MLIR as string
@@ -56,7 +59,14 @@ def _ttir_to_ttsharedir(mod):
         _dump_ir_if_needed([src_path])
         triton_shared_opt_path = _get_triton_shared_opt_path()
 
-        subprocess_args = [triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path]
+        subprocess_args = [
+            triton_shared_opt_path,
+            src_path,
+            "--triton-to-linalg-experimental",
+            "--mlir-print-debuginfo",
+            "-o",
+            dst_path,
+        ]
 
         if _get_sanitizer_type() != "":
             print("Building with sanitizer support...")
@@ -81,46 +91,50 @@ def _ttsharedir_to_llir(ttsharedir: str):
         Path(ttshared_path).write_text(ttsharedir)
         mlir_opt_path = _get_llvm_bin_path("mlir-opt")
         # TritonShared-MLIR to LLVM-MLIR
-        subprocess.check_call([mlir_opt_path, ttshared_path,
-            "--convert-linalg-to-affine-loops",
-            # Note: eliminate-empty-tensors fails when there are multiple func.return ops
-            # in a single kernel which are the results of early returns.
-            # See python/examples/test_early_return.py for examples.
-            # We disable this pass for now since performance on CPU isn't the main
-            # focus at the moment.
-            # "--eliminate-empty-tensors",
-            "--empty-tensor-to-alloc-tensor",
-            "--one-shot-bufferize=allow-return-allocs-from-loops=true",
-            "--lower-affine",
-            "--convert-linalg-to-loops",
-            "--expand-strided-metadata",
-            "--convert-scf-to-cf",
-            "--convert-arith-to-llvm",
-            "--convert-math-to-llvm",
-            "--convert-complex-to-llvm",
-            "--convert-vector-to-llvm",
-            "--convert-index-to-llvm",
-            "--memref-expand",
-            "--finalize-memref-to-llvm",
-            "--convert-func-to-llvm",
-            "--convert-cf-to-llvm",
-            # Lowering memrefs creates more affine.apply ops.
-            # Lowering these affine ops again creates further arith ops,
-            # so we have to run these two passes again here.
-            "--lower-affine",
-            "--convert-arith-to-llvm",
-            # Remove all unrealized casts created
-            "--reconcile-unrealized-casts",
-            "--mlir-print-debuginfo",
-            "-o",
-            llmlir_path])
+        subprocess.check_call(
+            [
+                mlir_opt_path,
+                ttshared_path,
+                "--convert-linalg-to-affine-loops",
+                # Note: eliminate-empty-tensors fails when there are multiple func.return ops
+                # in a single kernel which are the results of early returns.
+                # See python/examples/test_early_return.py for examples.
+                # We disable this pass for now since performance on CPU isn't the main
+                # focus at the moment.
+                # "--eliminate-empty-tensors",
+                "--empty-tensor-to-alloc-tensor",
+                "--one-shot-bufferize=allow-return-allocs-from-loops=true",
+                "--lower-affine",
+                "--convert-linalg-to-loops",
+                "--expand-strided-metadata",
+                "--convert-scf-to-cf",
+                "--convert-arith-to-llvm",
+                "--convert-math-to-llvm",
+                "--convert-complex-to-llvm",
+                "--convert-vector-to-llvm",
+                "--convert-index-to-llvm",
+                "--memref-expand",
+                "--finalize-memref-to-llvm",
+                "--convert-func-to-llvm",
+                "--convert-cf-to-llvm",
+                # Lowering memrefs creates more affine.apply ops.
+                # Lowering these affine ops again creates further arith ops,
+                # so we have to run these two passes again here.
+                "--lower-affine",
+                "--convert-arith-to-llvm",
+                # Remove all unrealized casts created
+                "--reconcile-unrealized-casts",
+                "--mlir-print-debuginfo",
+                "-o",
+                llmlir_path,
+            ]
+        )
 
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = _get_llvm_bin_path("mlir-translate")
-        subprocess.check_call([mlir_translate_path, llmlir_path,
-            "--mlir-to-llvmir",
-            "-o",
-            llir_path])
+        subprocess.check_call(
+            [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
+        )
         _dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
         return Path(llir_path).read_text()
 
@@ -146,17 +160,31 @@ def _llir_to_bin(llir: str, metadata):
             # using a sanitizer
             # invoke pass to append sanitizer attributes
             instrumented_src_path = os.path.join(tmpdir, "kernel-instrumented.ll")
-        
+
             opt_path = _get_llvm_bin_path("opt")
             top_level_triton_path = os.path.dirname(triton.__file__)
-            sanitizer_attributes_pass_path = str(next(Path(top_level_triton_path).rglob("libSanitizerAttributes.so"), None))
+            sanitizer_attributes_pass_path = str(
+                next(
+                    Path(top_level_triton_path).rglob("libSanitizerAttributes.so"), None
+                )
+            )
 
             if not sanitizer_attributes_pass_path:
-                raise Exception(f"libSanitizerAttributes.so does not exist.")
+                raise Exception("libSanitizerAttributes.so does not exist.")
 
-            subprocess.check_call([opt_path, "-load-pass-plugin", sanitizer_attributes_pass_path, 
-                "-passes=sanitizer-attributes", f"-sanitizer-type={sanitizer_type}", "-S", src_path, 
-                "-o", instrumented_src_path])
+            subprocess.check_call(
+                [
+                    opt_path,
+                    "-load-pass-plugin",
+                    sanitizer_attributes_pass_path,
+                    "-passes=sanitizer-attributes",
+                    f"-sanitizer-type={sanitizer_type}",
+                    "-S",
+                    src_path,
+                    "-o",
+                    instrumented_src_path,
+                ]
+            )
 
             # compile to object file
             clang_path = _get_llvm_bin_path("clang++")
@@ -164,23 +192,31 @@ def _llir_to_bin(llir: str, metadata):
             subprocess_args = [clang_path, "-c", instrumented_src_path, "-o", dst_path]
 
             if sanitizer_type == "asan":
-                subprocess_args.extend(["-g", "-fsanitize=address", "-mllvm", "-asan-stack=0"])
+                subprocess_args.extend(
+                    ["-g", "-fsanitize=address", "-mllvm", "-asan-stack=0"]
+                )
             elif sanitizer_type == "tsan":
                 subprocess_args.extend(["-g", "-fsanitize=thread"])
-                
+
             subprocess.check_call(subprocess_args)
         else:
             llc_path = _get_llvm_bin_path("llc")
-            llc_args = [llc_path, src_path, "-filetype=obj", "-relocation-model=pic", "-o", dst_path]
+            llc_args = [
+                llc_path,
+                src_path,
+                "-filetype=obj",
+                "-relocation-model=pic",
+                "-o",
+                dst_path,
+            ]
             # On RISC-V Linux, the system ABI is lp64d (hardware double-precision float).
             # Without explicitly enabling +f,+d, llc defaults to soft-float, causing
             # "can't link soft-float modules with double-float modules" linker errors.
             if platform.machine() == "riscv64":
                 llc_args.extend(["-mattr=+m,+a,+f,+d,+c,+v,+zfh,+zvfh,+zba,+zbb"])
             subprocess.check_call(llc_args)
-        
-        return Path(dst_path).read_bytes()
 
+        return Path(dst_path).read_bytes()
 
 
 @dataclass(frozen=True)
@@ -199,30 +235,32 @@ class CPUOptions:
     # Target specific backends can eanble it with supported types.
     supported_fp8_dtypes: Tuple[str] = ()
     allow_fp8e4nv: bool = False
-    allowed_dot_input_precisions: Tuple[str] = ("ieee", )
+    allowed_dot_input_precisions: Tuple[str] = ("ieee",)
     sanitize_overflow: bool = True
 
     def __post_init__(self):
         pass
 
     def hash(self):
-        key = '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()])
+        key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 class CPUBackend(BaseBackend):
-    binary_ext = 'obj'
+    binary_ext = "obj"
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == 'cpu'
+        return target.backend == "cpu"
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
 
     def parse_options(self, opts) -> Any:
-        args = {'arch': self.target.arch}
-        args.update({k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts})
+        args = {"arch": self.target.arch}
+        args.update(
+            {k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
+        )
         return CPUOptions(**args)
 
     def get_codegen_implementation(self, options):
@@ -240,7 +278,7 @@ class CPUBackend(BaseBackend):
             metadata.cluster_dims[0],
             metadata.cluster_dims[1],
             metadata.cluster_dims[2],
-            metadata.name
+            metadata.name,
         )
 
     # Our compilation pipeline isn't in python like nvidia or amd, no need to load
@@ -268,10 +306,11 @@ class CPUBackend(BaseBackend):
 
     def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["ttsharedir"] = lambda src, metadata: _optimize_ttsharedir(_ttir_to_ttsharedir(src))
+        stages["ttsharedir"] = lambda src, metadata: _optimize_ttsharedir(
+            _ttir_to_ttsharedir(src)
+        )
         stages["llir"] = lambda src, metadata: _optimize_llir(_ttsharedir_to_llir(src))
         stages["obj"] = lambda src, metadata: _llir_to_bin(src, metadata)
-
 
     @functools.lru_cache()
     def hash(self):

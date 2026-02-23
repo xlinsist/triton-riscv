@@ -18,10 +18,11 @@ def test_mask(device):
     input = torch.arange(0, SIZE, device=device, dtype=torch.int32)
     output = torch.full((SIZE,), -2, device=device, dtype=torch.int32)
 
-    if device == 'cpu':
+    if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    grid = lambda meta: (1,)
+    def grid(meta):
+        return (1,)
 
     src = triton.compiler.ASTSource(
         fn=test,
@@ -36,11 +37,16 @@ def test_mask(device):
     test[grid](input, output)
     print(input)
     print(output)
-    torch.testing.assert_close(output, torch.tensor([-1, -1, -1, -1, -2, -2, -2, -2], device=device, dtype=torch.int32))
+    torch.testing.assert_close(
+        output,
+        torch.tensor(
+            [-1, -1, -1, -1, -2, -2, -2, -2], device=device, dtype=torch.int32
+        ),
+    )
 
 
 def test_mask_with_scalar_in_conjunction(device):
-    if device == 'cpu':
+    if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
     @triton.jit
@@ -55,11 +61,19 @@ def test_mask_with_scalar_in_conjunction(device):
     input = torch.arange(0, SIZE, device=device, dtype=torch.int32)
     output = torch.full((SIZE,), -2, device=device, dtype=torch.int32)
     kernel[(1,)](input, output, 4, 3)
-    torch.testing.assert_close(output, torch.tensor([0, 1, 2, 3, -1, -1, -1, -1], device=device, dtype=torch.int32))
+    torch.testing.assert_close(
+        output,
+        torch.tensor([0, 1, 2, 3, -1, -1, -1, -1], device=device, dtype=torch.int32),
+    )
 
     # Test scalar mask evaluate to False
     SIZE = 8
     input = torch.arange(0, SIZE, device=device, dtype=torch.int32)
     output = torch.full((SIZE,), -2, device=device, dtype=torch.int32)
     kernel[(1,)](input, output, 4, 8)
-    torch.testing.assert_close(output, torch.tensor([-1, -1, -1, -1, -1, -1, -1, -1], device=device, dtype=torch.int32))
+    torch.testing.assert_close(
+        output,
+        torch.tensor(
+            [-1, -1, -1, -1, -1, -1, -1, -1], device=device, dtype=torch.int32
+        ),
+    )

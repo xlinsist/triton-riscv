@@ -55,5 +55,3 @@ module attributes {maia.triton_kernel} {
     tt.return
   }
 }
-
-

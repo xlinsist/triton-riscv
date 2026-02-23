@@ -4,6 +4,7 @@ import pytest
 
 import triton.language as tl
 
+
 @triton.jit
 def mask_loop(
     y_ptr,

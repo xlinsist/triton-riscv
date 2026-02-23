@@ -15,7 +15,7 @@ function print_error_and_exit() {
 }
 
 function print_info() {
-  echo -e "${INFO_COLOR_CODE}Status: $1${NO_COLOR_CODE}" 
+  echo -e "${INFO_COLOR_CODE}Status: $1${NO_COLOR_CODE}"
   shift
   for m in "$@"; do
     echo -e ${INFO_COLOR_CODE}$m${NO_COLOR_CODE}
@@ -23,7 +23,7 @@ function print_info() {
 }
 
 function print_warning() {
-  echo -e "${WARNING_COLOR_CODE}Warning: $1${NO_COLOR_CODE}" 
+  echo -e "${WARNING_COLOR_CODE}Warning: $1${NO_COLOR_CODE}"
   shift
   for m in "$@"; do
     echo -e ${WARNING_COLOR_CODE}$m${NO_COLOR_CODE}

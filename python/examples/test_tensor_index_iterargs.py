@@ -5,6 +5,7 @@ import triton.language as tl
 
 from triton.backends.triton_shared.driver import CPUDriver
 
+
 def test_tensor_indices_nested_with_mask(device):
     @triton.jit
     def addptr_with_masks(in0, out0, mask_bound):
@@ -22,20 +23,23 @@ def test_tensor_indices_nested_with_mask(device):
             offs += 4
             out_offs += 4
 
-
     SIZE = 17
     input = torch.arange(0, SIZE, device=device, dtype=torch.int32)
     output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
 
-    if device == 'cpu':
+    if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    grid = lambda meta: (1,)
+    def grid(meta):
+        return (1,)
 
     print(output)
     addptr_with_masks[grid](input, output, 14)
-    expected_output = torch.tensor([  0,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,  13,
-        -11, -11,  -1], dtype=torch.int32, device=device)
+    expected_output = torch.tensor(
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, -11, -11, -1],
+        dtype=torch.int32,
+        device=device,
+    )
     torch.testing.assert_close(output, expected_output)
     print(input)
     print(output)
@@ -63,21 +67,88 @@ def test_tensor_indices_nested(device):
     input = torch.arange(0, SIZE, device=device, dtype=torch.int32)
     output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
 
-    if device == 'cpu':
+    if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    grid = lambda meta: (1,)
+    def grid(meta):
+        return (1,)
 
     print(output)
     tensor_indices_nested[grid](input, output)
-    expected_output = torch.tensor([ 0,  1,  2,  3,  4,  5,  6,  7, 11, 12, 13, 14, 21, 22, 23, 24, 27, 28,
-        29, 30, 31, 32, 33, 34, 38, 39, 40, 41, 48, 49, 50, 51, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1], device=device,
-       dtype=torch.int32)
+    expected_output = torch.tensor(
+        [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            11,
+            12,
+            13,
+            14,
+            21,
+            22,
+            23,
+            24,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            38,
+            39,
+            40,
+            41,
+            48,
+            49,
+            50,
+            51,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+        ],
+        device=device,
+        dtype=torch.int32,
+    )
     torch.testing.assert_close(output, expected_output)
     print(input)
     print(output)
+
 
 def test_integer_tensor(device):
     @triton.jit
@@ -89,15 +160,15 @@ def test_integer_tensor(device):
             out_offs += 4
             offs += 4
 
-
     SIZE = 8
     input = torch.arange(0, SIZE, device=device, dtype=torch.int32)
     output = torch.full((SIZE,), -1, device=device, dtype=torch.int32)
 
-    if device == 'cpu':
+    if device == "cpu":
         triton.runtime.driver.set_active(CPUDriver())
 
-    grid = lambda meta: (1,)
+    def grid(meta):
+        return (1,)
 
     print(output)
     test_1[grid](output)

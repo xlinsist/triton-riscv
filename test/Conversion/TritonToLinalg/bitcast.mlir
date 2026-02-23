@@ -41,4 +41,3 @@ module {
 // CHECK:     return
 // CHECK:   }
 // CHECK: }
-

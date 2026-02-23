@@ -2,7 +2,7 @@ import hashlib
 import tempfile
 import sysconfig
 
-import os, subprocess, tempfile, platform
+import os, subprocess, platform
 import importlib.util
 import sys
 
@@ -12,11 +12,13 @@ from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
 
+
 def _get_llvm_bin_path(bin_name: str) -> str:
     path = os.getenv("LLVM_BINARY_DIR", "")
     if path == "":
         raise Exception("LLVM_BINARY_DIR is not set.")
     return os.path.join(path, bin_name)
+
 
 def _get_sanitizer_type():
     # returns "" if not set
@@ -26,20 +28,22 @@ def _get_sanitizer_type():
     if sanitizer_type != "" and sanitizer_type != "asan" and sanitizer_type != "tsan":
         # throw error
         raise Exception(f"TRITON_SHARED_SANITIZER_TYPE {sanitizer_type} is invalid.")
-    
+
     return sanitizer_type
+
 
 def _sanitizer_available(sanitizer_type):
     if "LD_PRELOAD" not in os.environ:
         return False
     if f"libclang_rt.{sanitizer_type}.so" not in os.environ["LD_PRELOAD"]:
         return False
-    
+
     return True
+
 
 # -------------------- Launcher ----------------------------
 def _ty_to_cpp(ty):
-    if ty[0] == '*':
+    if ty[0] == "*":
         return "void*"
     if ty == "constexpr":
         return "PyObject*"
@@ -63,41 +67,72 @@ def _ty_to_cpp(ty):
         "fp64": "double",
     }[ty]
 
+
 def _extracted_type(ty):
-    if ty[0] == '*':
+    if ty[0] == "*":
         return "PyObject*"
     if ty == "constexpr":
         return "PyObject*"
     return _ty_to_cpp(ty)
 
+
 def _format_of(ty):
     return {
-      "PyObject*": "O",
-      "constexpr": "O",
-      "float": "f",
-      "double": "d",
-      "long": "l",
-      "int8_t": "b",
-      "int16_t": "h",
-      "int32_t": "i",
-      "int64_t": "l",
-      "uint8_t": "B",
-      "uint16_t": "H",
-      "uint32_t": "I",
-      "uint64_t": "K",
+        "PyObject*": "O",
+        "constexpr": "O",
+        "float": "f",
+        "double": "d",
+        "long": "l",
+        "int8_t": "b",
+        "int16_t": "h",
+        "int32_t": "i",
+        "int64_t": "l",
+        "uint8_t": "B",
+        "uint16_t": "H",
+        "uint32_t": "I",
+        "uint64_t": "K",
     }[ty]
 
+
 def _generate_launcher(constants, signature, kernel_name):
-    arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
-    args_format = ''.join([_format_of(_extracted_type(ty)) for ty in signature.values()])
+    arg_decls = ", ".join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    args_format = "".join(
+        [_format_of(_extracted_type(ty)) for ty in signature.values()]
+    )
     format = "iiiOOOO" + args_format
-    args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
+    args_list = (
+        ", " + ", ".join(f"&_arg{i}" for i, ty in signature.items())
+        if len(signature) > 0
+        else ""
+    )
 
-    kernel_arg_decls = ', '.join(_ty_to_cpp(ty) if ty[0] != "*" else f"int64_t, void*" for i, ty in signature.items() if ty != "constexpr")
-    kernel_arg_decls += ', ' if kernel_arg_decls else ''
+    kernel_arg_decls = ", ".join(
+        _ty_to_cpp(ty) if ty[0] != "*" else "int64_t, void*"
+        for i, ty in signature.items()
+        if ty != "constexpr"
+    )
+    kernel_arg_decls += ", " if kernel_arg_decls else ""
 
-    kernel_parameters = ', '.join(f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}" for i, ty in signature.items() if ty != "constexpr")
-    kernel_parameters += ', ' if kernel_parameters else ''
+    kernel_parameters = ", ".join(
+        f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}"
+        for i, ty in signature.items()
+        if ty != "constexpr"
+    )
+    kernel_parameters += ", " if kernel_parameters else ""
+
+    launch_args_str = ", ".join(
+        f"ptr_info{i}.dev_ptr" if ty[0] == "*" else f"_arg{i}"
+        for i, ty in signature.items()
+    )
+    get_ptr_checks_str = "; ".join(
+        (
+            f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); "
+            f"if (!ptr_info{i}.valid) return NULL;"
+            if ty[0] == "*"
+            else ""
+        )
+        for i, ty in signature.items()
+    )
 
     return f"""
 #include <assert.h>
@@ -116,7 +151,7 @@ extern "C" {{
 static void _launch(int gridX, int gridY, int gridZ, {arg_decls}) {{
   if (gridX*gridY*gridZ > 0) {{
     // Cast "function" to the real function type.
-    // apply parallelization to the triton grid when using ThreadSanitizer (TSan) 
+    // apply parallelization to the triton grid when using ThreadSanitizer (TSan)
     // to help detect potential data races across program instances during kernel execution
     {"#pragma omp parallel for collapse(3)" if _get_sanitizer_type() == "tsan" else ""}
     for(int x = 0; x < gridX; x++) {{
@@ -188,7 +223,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   // This will make updating the driver easier in the future.
 
   //  int num_warps, num_ctas, shared_memory, clusterDimX, clusterDimY, clusterDimZ;
-  //  if (!PyArg_ParseTuple(kernel_metadata, \"iiiiii\", &num_warps, &num_ctas, &shared_memory, &clusterDimX, &clusterDimY, &clusterDimZ)) {{
+  //  if (!PyArg_ParseTuple(kernel_metadata, \"iiiiii\", &num_warps, &num_ctas,
+  //      &shared_memory, &clusterDimX, &clusterDimY, &clusterDimZ)) {{
   //    PyErr_SetString(PyExc_TypeError, "kernel_metadata must be a tuple");
   //    return NULL;
   //  }}
@@ -203,8 +239,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   }}
 
   // raise exception asap
-  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  _launch(gridX, gridY, gridZ, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
+  {get_ptr_checks_str};
+  _launch(gridX, gridY, gridZ, {launch_args_str});
 
   if (PyErr_Occurred()) {{
     return NULL;
@@ -249,26 +285,42 @@ PyMODINIT_FUNC PyInit___triton_shared_ref_cpu_kernel_launcher(void) {{
 def compile_module(launcher_src, kernel_placeholder_name):
     py_version = sys.version_info
     if platform.system() == "Windows":
-        py_include_dir = os.path.join(sys.base_prefix, 'include')
-        py_lib_dir = os.path.join(sys.base_prefix, 'libs')
-        py_lib = '{name}{major}{minor}.lib'.format(name="python", major=py_version.major, minor=py_version.minor)
+        py_include_dir = os.path.join(sys.base_prefix, "include")
+        py_lib_dir = os.path.join(sys.base_prefix, "libs")
+        py_lib = "{name}{major}{minor}.lib".format(
+            name="python", major=py_version.major, minor=py_version.minor
+        )
     else:
-        py_include_dir = os.path.join(sys.base_prefix, 'include', f'python{sys.version_info.major}.{sys.version_info.minor}')
-        py_lib_dir = os.path.join(sys.base_prefix, 'lib')
-        py_lib = '{name}{major}.{minor}'.format(name="python", major=py_version.major, minor=py_version.minor)
+        py_include_dir = os.path.join(
+            sys.base_prefix,
+            "include",
+            f"python{sys.version_info.major}.{sys.version_info.minor}",
+        )
+        py_lib_dir = os.path.join(sys.base_prefix, "lib")
+        py_lib = "{name}{major}.{minor}".format(
+            name="python", major=py_version.major, minor=py_version.minor
+        )
     cpu_backend_path = Path(__file__).resolve().parent
     include_dir = os.path.join(cpu_backend_path, "include")
 
     def launch(
-        gridX, gridY, gridZ, stream, cu_function,
-        kernel_metadata, launch_metadata,
-        launch_enter_hook, launch_exit_hook, *args):
+        gridX,
+        gridY,
+        gridZ,
+        stream,
+        cu_function,
+        kernel_metadata,
+        launch_metadata,
+        launch_enter_hook,
+        launch_exit_hook,
+        *args,
+    ):
         # Unlike CUDA/HIP, we cannot easily pass function pointer across different pybind libraries.
         # Let's compile one kernel every time.
         # The cu_function parameter actually contains our kernel obj.
         # See CPUUtils.load_binary method.
         kernel_obj = cu_function
-        kernel_name = kernel_metadata[6] # see pack_metadata in compiler.py
+        kernel_name = kernel_metadata[6]  # see pack_metadata in compiler.py
         src = launcher_src.replace(kernel_placeholder_name, kernel_name)
 
         key = hashlib.sha256(src.encode("utf-8") + kernel_obj).hexdigest()
@@ -276,73 +328,126 @@ def compile_module(launcher_src, kernel_placeholder_name):
         name = "__triton_shared_ref_cpu_kernel_launcher"
 
         if platform.system() == "Windows":
-          filename = f"{name}.pyd"
+            filename = f"{name}.pyd"
         else:
-          filename = f"{name}.so"
+            filename = f"{name}.so"
         cache_path = cache.get_file(filename)
 
         if cache_path is None:
-          with tempfile.TemporaryDirectory() as tmpdir:
-              sanitizer_type = _get_sanitizer_type()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                sanitizer_type = _get_sanitizer_type()
 
-              if platform.system() == "Windows":
-                  if sanitizer_type != "":
-                      raise Exception("Sanitizers are not supported on Windows with triton-shared.")
+                if platform.system() == "Windows":
+                    if sanitizer_type != "":
+                        raise Exception(
+                            "Sanitizers are not supported on Windows with triton-shared."
+                        )
 
-                  obj_path = os.path.join(tmpdir, "kernel.obj")
-                  launcher_src_path = os.path.join(tmpdir, "main.cxx")
-                  so_path = os.path.join(tmpdir, "kernel.pyd")
-                  Path(obj_path).write_bytes(kernel_obj)
-                  Path(launcher_src_path).write_text(src)
-                  # Compile it together.
-                  subprocess.check_call([
-                    "cl", "/LD", "/std:c++17", launcher_src_path, obj_path,
-                    f"-I{py_include_dir}", f"-I{include_dir}", "/link", f"/LIBPATH:{py_lib_dir}",
-                    "/link", f"{py_lib}", f"/OUT:{so_path}"
-                  ])
-              else:
-                  obj_path = os.path.join(tmpdir, "kernel.o")
-                  launcher_src_path = os.path.join(tmpdir, "main.cxx")
-                  so_path = os.path.join(tmpdir, "kernel.so")
-                  Path(obj_path).write_bytes(kernel_obj)
-                  Path(launcher_src_path).write_text(src)
+                    obj_path = os.path.join(tmpdir, "kernel.obj")
+                    launcher_src_path = os.path.join(tmpdir, "main.cxx")
+                    so_path = os.path.join(tmpdir, "kernel.pyd")
+                    Path(obj_path).write_bytes(kernel_obj)
+                    Path(launcher_src_path).write_text(src)
+                    # Compile it together.
+                    subprocess.check_call(
+                        [
+                            "cl",
+                            "/LD",
+                            "/std:c++17",
+                            launcher_src_path,
+                            obj_path,
+                            f"-I{py_include_dir}",
+                            f"-I{include_dir}",
+                            "/link",
+                            f"/LIBPATH:{py_lib_dir}",
+                            "/link",
+                            f"{py_lib}",
+                            f"/OUT:{so_path}",
+                        ]
+                    )
+                else:
+                    obj_path = os.path.join(tmpdir, "kernel.o")
+                    launcher_src_path = os.path.join(tmpdir, "main.cxx")
+                    so_path = os.path.join(tmpdir, "kernel.so")
+                    Path(obj_path).write_bytes(kernel_obj)
+                    Path(launcher_src_path).write_text(src)
 
-                  # Compile it together.
-                  if sanitizer_type != "":
-                      clang_path = _get_llvm_bin_path("clang++")
+                    # Compile it together.
+                    if sanitizer_type != "":
+                        clang_path = _get_llvm_bin_path("clang++")
 
-                      subprocess_args = [
-                          clang_path, "-std=c++17", launcher_src_path, obj_path,
-                          f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-                          "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-                      ]
+                        subprocess_args = [
+                            clang_path,
+                            "-std=c++17",
+                            launcher_src_path,
+                            obj_path,
+                            f"-I{py_include_dir}",
+                            f"-I{include_dir}",
+                            f"-L{py_lib_dir}",
+                            "-shared",
+                            f"-l{py_lib}",
+                            "-fPIC",
+                            "-o",
+                            so_path,
+                        ]
 
-                      if not _sanitizer_available(sanitizer_type):
-                          raise Exception(f"Use LD_PRELOAD=\"path/to/libclang_rt.{sanitizer_type}.so\" TRITON_SHARED_SANITIZER_TYPE={sanitizer_type} python ...")
+                        if not _sanitizer_available(sanitizer_type):
+                            raise Exception(
+                                'Use LD_PRELOAD="path/to/libclang_rt.'
+                                + sanitizer_type
+                                + '.so" TRITON_SHARED_SANITIZER_TYPE='
+                                + sanitizer_type
+                                + " python ..."
+                            )
 
-                      if sanitizer_type == "asan":
-                          subprocess_args.extend(["-g", "-fsanitize=address", "-mllvm", "-asan-stack=0"])
-                      elif sanitizer_type == "tsan":
-                          # ensure that openmp is available
-                          libomp_path = next(Path(Path(_get_llvm_bin_path("")).parent).rglob("libomp.so"), None)
+                        if sanitizer_type == "asan":
+                            subprocess_args.extend(
+                                ["-g", "-fsanitize=address", "-mllvm", "-asan-stack=0"]
+                            )
+                        elif sanitizer_type == "tsan":
+                            # ensure that openmp is available
+                            libomp_path = next(
+                                Path(Path(_get_llvm_bin_path("")).parent).rglob(
+                                    "libomp.so"
+                                ),
+                                None,
+                            )
 
-                          if not libomp_path:
-                              raise Exception(f"libomp.so does not exist.")
+                            if not libomp_path:
+                                raise Exception("libomp.so does not exist.")
 
-                          libomp_path = str(libomp_path.parent)
+                            libomp_path = str(libomp_path.parent)
 
-                          subprocess_args.extend(["-g", "-fsanitize=thread", "-fopenmp", f"-Wl,-rpath,{libomp_path}"])
-                      
-                      subprocess.check_call(subprocess_args)
-                  else:
-                      subprocess.check_call([
-                        "g++", "-std=c++17", launcher_src_path, obj_path,
-                        f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-                        "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-                      ])
+                            subprocess_args.extend(
+                                [
+                                    "-g",
+                                    "-fsanitize=thread",
+                                    "-fopenmp",
+                                    f"-Wl,-rpath,{libomp_path}",
+                                ]
+                            )
 
-              with open(so_path, "rb") as f:
-                cache_path = cache.put(f.read(), filename, binary=True)
+                        subprocess.check_call(subprocess_args)
+                    else:
+                        subprocess.check_call(
+                            [
+                                "g++",
+                                "-std=c++17",
+                                launcher_src_path,
+                                obj_path,
+                                f"-I{py_include_dir}",
+                                f"-I{include_dir}",
+                                f"-L{py_lib_dir}",
+                                "-shared",
+                                f"-l{py_lib}",
+                                "-fPIC",
+                                "-o",
+                                so_path,
+                            ]
+                        )
+
+                with open(so_path, "rb") as f:
+                    cache_path = cache.put(f.read(), filename, binary=True)
 
         # Load and launch the compiled kernel.
         spec = importlib.util.spec_from_file_location(name, cache_path)
@@ -350,10 +455,16 @@ def compile_module(launcher_src, kernel_placeholder_name):
             raise RuntimeError(f"Cannot find {name} module in {cache_path}")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod.launch(gridX, gridY, gridZ,
-                          kernel_metadata, launch_metadata,
-                          launch_enter_hook, launch_exit_hook,
-                          *args)
+        return mod.launch(
+            gridX,
+            gridY,
+            gridZ,
+            kernel_metadata,
+            launch_metadata,
+            launch_enter_hook,
+            launch_exit_hook,
+            *args,
+        )
 
     return launch
 
@@ -364,7 +475,10 @@ class CPULauncher(object):
         kernel_placeholder_name = "KERNEL_NAME_PLACEHOLDER"
 
         constants = src.constants if hasattr(src, "constants") else dict()
-        cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
+
+        def cst_key(i):
+            return src.fn.arg_names.index(i) if isinstance(i, str) else i
+
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
         launcher_src = _generate_launcher(constants, signature, kernel_placeholder_name)
@@ -374,7 +488,6 @@ class CPULauncher(object):
 
     def __call__(self, *args, **kwargs):
         self.launch(*args, **kwargs)
-
 
 
 class CPUUtils(object):
@@ -395,11 +508,11 @@ class CPUUtils(object):
     @staticmethod
     def get_device_properties(device):
         return {
-          "max_shared_mem": 2 ** 20,
-          "multiprocessor_count": None,
-          "sm_clock_rate": None,
-          "mem_clock_rate": None,
-          "mem_bus_width": None
+            "max_shared_mem": 2**20,
+            "multiprocessor_count": None,
+            "sm_clock_rate": None,
+            "mem_clock_rate": None,
+            "mem_bus_width": None,
         }
 
     # Important note:
@@ -409,11 +522,11 @@ class CPUUtils(object):
     @staticmethod
     def load_binary(name, kernel_obj, shared, device):
         return (
-          None,       # module
-          kernel_obj, # function
-          None,       # n_regs
-          None,        # n_spills
-          sys.maxsize, # n_max_threads
+            None,  # module
+            kernel_obj,  # function
+            None,  # n_regs
+            None,  # n_spills
+            sys.maxsize,  # n_max_threads
         )
 
 
@@ -433,6 +546,7 @@ class CPUDriver(DriverBase):
 
     def get_benchmarker(self):
         from triton.testing import do_bench
+
         return do_bench
 
     def get_device_capability(self):
@@ -455,11 +569,11 @@ class CPUDriver(DriverBase):
 
     def get_active_torch_device(self):
         import torch
+
         return torch.device("cpu")
 
     def assemble_tensormap_to_arg(self, tensormaps_info, args):
         return args
-    
+
     def map_python_to_cpp_type(self, ty: str) -> str:
         return _ty_to_cpp(ty)
-  

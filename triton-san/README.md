@@ -1,5 +1,5 @@
 # TritonSan
-TritonSan is a dynamic analysis tool that is capable of accurately detecting bugs (e.g., buffer overflow, data race) in Triton programs. 
+TritonSan is a dynamic analysis tool that is capable of accurately detecting bugs (e.g., buffer overflow, data race) in Triton programs.
 
 We presented this work as a poster at the Triton Conference 2025: [Triton-San: Toward Precise Debugging of Triton Kernels via LLVM Sanitizers](doc/triton-conf-2025-poster.pdf).
 
@@ -21,7 +21,7 @@ TritonSan leverages triton-shared, a shared middleware layer for the Triton comp
 Because the prebuilt LLVM downloaded by Triton’s `setup.py` excludes LLVM sanitizers (i.e., the compiler-rt subproject is disabled), we need to utilize a custom LLVM build that matches the top commit hash specified in `triton/cmake/llvm-hash.txt`.
 
 To simplify installation, we provide a `build.sh` script that automates the entire process, including:
-- setting up all prerequisites in a Python virtual environment, 
+- setting up all prerequisites in a Python virtual environment,
 - building a custom LLVM with all required subprojects enabled (e.g., compiler-rt, openmp),
 - installing triton-shared with TritonSan enabled into the `triton` submodule,
 - generating the TritonSan driver script (`triton-san`).
@@ -154,7 +154,7 @@ allocated by thread T0 here:
 33  SUMMARY: AddressSanitizer: heap-buffer-overflow ./triton-san/example/buffer-overflow.py:28:35 in kernel
 ```
 
-In both examples, TritonSan’s output should correspond to the bug description provided at the beginning of each sample program. 
+In both examples, TritonSan’s output should correspond to the bug description provided at the beginning of each sample program.
 
 **We also found that these two bugs are not detected by [Compute Sanitizer](https://triton-lang.org/main/programming-guide/chapter-3/debugging.html#using-third-party-tools), highlighting the value of TritonSan as a complementary debugging tool for Triton programs.**
 

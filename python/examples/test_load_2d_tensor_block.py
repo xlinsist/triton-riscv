@@ -61,7 +61,8 @@ def test(device):
     BLOCK_SIZE_ROW = 4
     BLOCK_SIZE_COL = 2
 
-    grid = lambda meta: (n_rows // BLOCK_SIZE_ROW, n_cols // BLOCK_SIZE_COL)
+    def grid(meta):
+        return (n_rows // BLOCK_SIZE_ROW, n_cols // BLOCK_SIZE_COL)
 
     kernel[grid](
         x,

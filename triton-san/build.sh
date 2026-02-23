@@ -59,8 +59,8 @@ echo -e "\n\n\n"
 
 echo "================= Setup Python virtual environment ================"
 if [ ! -e "${VENV_PATH}" ]; then
-  "${SCRIPT_FOLDER}/setup_prerequisite.sh" "${TRITON_PATH}" "${VENV_PATH}" 
-else 
+  "${SCRIPT_FOLDER}/setup_prerequisite.sh" "${TRITON_PATH}" "${VENV_PATH}"
+else
   required_file=(
     "${VENV_PATH}/bin/activate"
   )

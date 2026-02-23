@@ -6,7 +6,14 @@ import benchmark
 
 
 @triton.jit
-def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_cols, BLOCK_SIZE: tl.constexpr):
+def softmax_kernel(
+    output_ptr,
+    input_ptr,
+    input_row_stride,
+    output_row_stride,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
+):
     # The rows of the softmax are independent, so we parallelize across those
     row_idx = tl.program_id(0)
     # The stride represents how much we need to increase the pointer to advance 1 row
@@ -16,7 +23,7 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n
     col_offsets = tl.arange(0, BLOCK_SIZE)
     input_ptrs = row_start_ptr + col_offsets
     # Load the row into SRAM, using a mask since BLOCK_SIZE may be > than n_cols
-    row = tl.load(input_ptrs, mask=col_offsets < n_cols, other=-float('inf'))
+    row = tl.load(input_ptrs, mask=col_offsets < n_cols, other=-float("inf"))
     # Subtract maximum for numerical stability
     row_minus_max = row - tl.max(row, axis=0)
     # Note that exponentiation in Triton is fast but approximate (i.e., think __expf in CUDA)
@@ -46,7 +53,7 @@ def softmax(x):
     y = torch.empty_like(x)
     # Enqueue kernel. The 1D launch grid is simple: we have one kernel instance per row o
     # f the input matrix
-    softmax_kernel[(n_rows, )](
+    softmax_kernel[(n_rows,)](
         y,
         x,
         x.stride(0),
@@ -56,6 +63,7 @@ def softmax(x):
         BLOCK_SIZE=BLOCK_SIZE,
     )
     return y
+
 
 def test_softmax(device):
     torch.manual_seed(0)
@@ -68,15 +76,15 @@ def test_softmax(device):
 @benchmark.measure()
 def bench_softmax(size, provider):
     torch.manual_seed(0)
-    x = torch.randn(size, size, device='cpu')
-    if provider == 'torch':
-       torch.softmax(x, axis=1)
-    if provider == 'triton':
-       softmax(x)
+    x = torch.randn(size, size, device="cpu")
+    if provider == "torch":
+        torch.softmax(x, axis=1)
+    if provider == "triton":
+        softmax(x)
 
 
 if __name__ == "__main__":
     benchmark.select_cpu_backend()
     for X in [2**i for i in range(10, 14, 1)]:
-        for provider in ['torch', 'triton']:
+        for provider in ["torch", "triton"]:
             bench_softmax(X, provider)

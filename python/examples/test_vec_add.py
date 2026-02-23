@@ -42,7 +42,10 @@ def add(x: torch.Tensor, y: torch.Tensor):
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int].
     # In this case, we use a 1D grid where the size is the number of blocks:
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+
+    def grid(meta):
+        return (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+
     # NOTE:
     #  - Each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be indexed with a launch grid to obtain a callable GPU kernel.
@@ -68,18 +71,19 @@ def test(device):
         f"{torch.max(torch.abs(output_torch - output_triton))}"
     )
 
+
 @benchmark.measure()
 def bench_vecadd(size, provider):
-    a = torch.rand(size, device='cpu', dtype=torch.float32)
-    b = torch.rand(size, device='cpu', dtype=torch.float32)
-    if provider == 'torch':
-       a + b
-    if provider == 'triton':
+    a = torch.rand(size, device="cpu", dtype=torch.float32)
+    b = torch.rand(size, device="cpu", dtype=torch.float32)
+    if provider == "torch":
+        a + b
+    if provider == "triton":
         add(a, b)
 
 
 if __name__ == "__main__":
     benchmark.select_cpu_backend()
     for X in [2**i for i in range(22, 25, 1)]:
-        for provider in ['torch', 'triton']:
+        for provider in ["torch", "triton"]:
             bench_vecadd(X, provider)
