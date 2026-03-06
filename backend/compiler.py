@@ -33,8 +33,10 @@ def _dump_ir_if_needed(files):
     path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
     if not path:
         return
+    os.makedirs(path, exist_ok=True)
     for f in files:
-        shutil.copy(f, os.path.join(path, os.path.basename(f)))
+        if os.path.isfile(f):
+            shutil.copy(f, os.path.join(path, os.path.basename(f)))
 
 
 def _get_sanitizer_type():
