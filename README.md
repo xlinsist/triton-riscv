@@ -96,9 +96,14 @@ Before running tests or Triton kernels, set these in your environment:
 BUILD_DIR=$(ls -d build/cmake.linux-*-cpython-*)
 export TRITON_SHARED_OPT_PATH=$(pwd)/${BUILD_DIR}/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt
 
-# Directory containing mlir-opt, mlir-translate, and llc (e.g. your Buddy/LLVM build's bin/).
+# Directory containing buddy-opt (buddy-mlir build's bin/).
+export BUDDY_MLIR_BINARY_DIR=/path/to/buddy-mlir/build/bin
+
+# Directory containing mlir-translate, llc, opt, clang++ (LLVM build's bin/).
 export LLVM_BINARY_DIR=/path/to/buddy-mlir/llvm/build/bin
 ```
+
+After changing the buddy-opt pass pipeline (e.g. in `backend/compiler.py`), please Triton's cache (e.g. `rm -rf ~/.triton/cache`).
 
 ## Run the example test suite
 

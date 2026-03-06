@@ -29,6 +29,14 @@ def _get_llvm_bin_path(bin_name: str) -> str:
     return os.path.join(path, bin_name)
 
 
+def _get_buddy_opt_path() -> str:
+    """Path to buddy-opt (from buddy-mlir build)."""
+    path = os.getenv("BUDDY_MLIR_BINARY_DIR", "")
+    if path == "":
+        raise Exception("BUDDY_MLIR_BINARY_DIR is not set.")
+    return os.path.join(path, "buddy-opt")
+
+
 def _dump_ir_if_needed(files):
     path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
     if not path:
@@ -91,11 +99,11 @@ def _ttsharedir_to_llir(ttsharedir: str):
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
         llir_path = os.path.join(tmpdir, "ll.ir")
         Path(ttshared_path).write_text(ttsharedir)
-        mlir_opt_path = _get_llvm_bin_path("mlir-opt")
+        buddy_opt_path = _get_buddy_opt_path()
         # TritonShared-MLIR to LLVM-MLIR
         subprocess.check_call(
             [
-                mlir_opt_path,
+                buddy_opt_path,
                 ttshared_path,
                 "--convert-linalg-to-affine-loops",
                 # Note: eliminate-empty-tensors fails when there are multiple func.return ops
@@ -106,6 +114,7 @@ def _ttsharedir_to_llir(ttsharedir: str):
                 # "--eliminate-empty-tensors",
                 "--empty-tensor-to-alloc-tensor",
                 "--one-shot-bufferize=allow-return-allocs-from-loops=true",
+                "--matmul-vectorization",
                 "--lower-affine",
                 "--convert-linalg-to-loops",
                 "--expand-strided-metadata",
