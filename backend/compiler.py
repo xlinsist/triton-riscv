@@ -47,6 +47,14 @@ def _dump_ir_if_needed(files):
             shutil.copy(f, os.path.join(path, os.path.basename(f)))
 
 
+def _dump_text_if_needed(filename: str, text: str):
+    path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
+    if not path:
+        return
+    os.makedirs(path, exist_ok=True)
+    Path(os.path.join(path, filename)).write_text(text)
+
+
 def _get_sanitizer_type():
     # returns "" if not set
     # throws error if set to something other than "asan" or "tsan"
@@ -57,6 +65,17 @@ def _get_sanitizer_type():
         raise Exception(f"TRITON_SHARED_SANITIZER_TYPE {sanitizer_type} is invalid.")
 
     return sanitizer_type
+
+
+def _matmul_vectorization_enabled() -> bool:
+    """
+    Controls buddy-opt `--matmul-vectorization`.
+
+    Default is enabled to preserve current behavior.
+    Set `TRITON_RISCV_DISABLE_MATMUL_VECTORIZATION=1` to disable.
+    """
+    v = os.getenv("TRITON_RISCV_DISABLE_MATMUL_VECTORIZATION", "").strip().lower()
+    return v in ("", "0", "false", "no", "off")
 
 
 def _ttir_to_ttsharedir(mod):
@@ -101,20 +120,26 @@ def _ttsharedir_to_llir(ttsharedir: str):
         Path(ttshared_path).write_text(ttsharedir)
         buddy_opt_path = _get_buddy_opt_path()
         # TritonShared-MLIR to LLVM-MLIR
-        subprocess.check_call(
+        buddy_opt_args = [
+            buddy_opt_path,
+            ttshared_path,
+            # Note: eliminate-empty-tensors fails when there are multiple func.return ops
+            # in a single kernel which are the results of early returns.
+            # See python/examples/test_early_return.py for examples.
+            # We disable this pass for now since performance on CPU isn't the main
+            # focus at the moment.
+            # "--eliminate-empty-tensors",
+            "--empty-tensor-to-alloc-tensor",
+            "--one-shot-bufferize=allow-return-allocs-from-loops=true",
+        ]
+        # Important: run matmul vectorization before lowering linalg ops to loops.
+        # Otherwise the linalg.matmul pattern is gone and this pass becomes a no-op.
+        if _matmul_vectorization_enabled():
+            buddy_opt_args.append("--matmul-vectorization")
+        buddy_opt_args.extend(
             [
-                buddy_opt_path,
-                ttshared_path,
+                # Lower any remaining linalg ops (e.g. elementwise) for downstream LLVM lowering.
                 "--convert-linalg-to-affine-loops",
-                # Note: eliminate-empty-tensors fails when there are multiple func.return ops
-                # in a single kernel which are the results of early returns.
-                # See python/examples/test_early_return.py for examples.
-                # We disable this pass for now since performance on CPU isn't the main
-                # focus at the moment.
-                # "--eliminate-empty-tensors",
-                "--empty-tensor-to-alloc-tensor",
-                "--one-shot-bufferize=allow-return-allocs-from-loops=true",
-                "--matmul-vectorization",
                 "--lower-affine",
                 "--convert-linalg-to-loops",
                 "--expand-strided-metadata",
@@ -139,6 +164,13 @@ def _ttsharedir_to_llir(ttsharedir: str):
                 "-o",
                 llmlir_path,
             ]
+        )
+        _dump_text_if_needed(
+            "buddy-opt.args.txt",
+            " ".join(buddy_opt_args[2:]) + "\n",
+        )
+        subprocess.check_call(
+            buddy_opt_args
         )
 
         # LLVM-MLIR to LLVM-IR

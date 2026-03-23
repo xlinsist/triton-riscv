@@ -1,0 +1,4 @@
+interface:
+  display_name: "Setup Env"
+  short_description: "整理并验证仓库环境搭建路径，产出可执行文档与最小复现实验。"
+  default_prompt: "Use this skill to research repo setup details, update SETUP_GUIDE.md, validate INSTALLATION.md steps on the current machine, and add a copy-paste minimal runnable path in EXPERIMENT.md."
