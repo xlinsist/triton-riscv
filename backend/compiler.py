@@ -132,7 +132,7 @@ def _ttsharedir_to_llir(ttsharedir: str):
             # Keep this order aligned with ../Makefile (MATMUL_PIPELINE).
             lowering_passes = [
                 "--lower-linalg-to-vir",
-                "--lower-vir-to-vector=vector-width=4",
+                "--lower-vir-to-vector=vector-width=16",
                 "--cse",
                 "--convert-vector-to-scf",
                 "--expand-strided-metadata",
