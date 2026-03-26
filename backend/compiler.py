@@ -100,12 +100,12 @@ def _ttsharedir_to_llir(ttsharedir: str):
         llir_path = os.path.join(tmpdir, "ll.ir")
         Path(ttshared_path).write_text(ttsharedir)
         buddy_opt_path = _get_buddy_opt_path()
-        # TritonShared-MLIR to LLVM-MLIR
+        # TritonShared-MLIR -> Linalg -> VIR -> Vector -> LLVM-MLIR
+        # Keep this pass order aligned with ../Makefile (MATMUL_PIPELINE).
         subprocess.check_call(
             [
                 buddy_opt_path,
                 ttshared_path,
-                "--convert-linalg-to-affine-loops",
                 # Note: eliminate-empty-tensors fails when there are multiple func.return ops
                 # in a single kernel which are the results of early returns.
                 # See python/examples/test_early_return.py for examples.
@@ -114,25 +114,19 @@ def _ttsharedir_to_llir(ttsharedir: str):
                 # "--eliminate-empty-tensors",
                 "--empty-tensor-to-alloc-tensor",
                 "--one-shot-bufferize=allow-return-allocs-from-loops=true",
-                "--matmul-vectorization",
-                "--lower-affine",
-                "--convert-linalg-to-loops",
+                "--lower-linalg-to-vir",
+                "--lower-vir-to-vector=vector-width=4",
+                "--cse",
+                "--convert-vector-to-scf",
                 "--expand-strided-metadata",
+                "--lower-affine",
                 "--convert-scf-to-cf",
+                "--convert-cf-to-llvm",
+                "--convert-vector-to-llvm",
                 "--convert-arith-to-llvm",
                 "--convert-math-to-llvm",
-                "--convert-complex-to-llvm",
-                "--convert-vector-to-llvm",
-                "--convert-index-to-llvm",
-                "--memref-expand",
                 "--finalize-memref-to-llvm",
                 "--convert-func-to-llvm",
-                "--convert-cf-to-llvm",
-                # Lowering memrefs creates more affine.apply ops.
-                # Lowering these affine ops again creates further arith ops,
-                # so we have to run these two passes again here.
-                "--lower-affine",
-                "--convert-arith-to-llvm",
                 # Remove all unrealized casts created
                 "--reconcile-unrealized-casts",
                 "--mlir-print-debuginfo",
