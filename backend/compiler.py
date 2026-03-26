@@ -47,6 +47,23 @@ def _dump_ir_if_needed(files):
             shutil.copy(f, os.path.join(path, os.path.basename(f)))
 
 
+def _dump_text_if_needed(filename: str, text: str):
+    path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
+    if not path:
+        return
+    os.makedirs(path, exist_ok=True)
+    Path(os.path.join(path, filename)).write_text(text)
+
+
+def _get_lowering_mode() -> str:
+    mode = os.getenv("TRITON_RISCV_LOWERING_MODE", "vir_vector").strip().lower()
+    if mode not in ("vir_vector", "linalg_loops"):
+        raise Exception(
+            "TRITON_RISCV_LOWERING_MODE must be one of: vir_vector, linalg_loops"
+        )
+    return mode
+
+
 def _get_sanitizer_type():
     # returns "" if not set
     # throws error if set to something other than "asan" or "tsan"
@@ -100,20 +117,20 @@ def _ttsharedir_to_llir(ttsharedir: str):
         llir_path = os.path.join(tmpdir, "ll.ir")
         Path(ttshared_path).write_text(ttsharedir)
         buddy_opt_path = _get_buddy_opt_path()
-        # TritonShared-MLIR -> Linalg -> VIR -> Vector -> LLVM-MLIR
-        # Keep this pass order aligned with ../Makefile (MATMUL_PIPELINE).
-        subprocess.check_call(
-            [
-                buddy_opt_path,
-                ttshared_path,
-                # Note: eliminate-empty-tensors fails when there are multiple func.return ops
-                # in a single kernel which are the results of early returns.
-                # See python/examples/test_early_return.py for examples.
-                # We disable this pass for now since performance on CPU isn't the main
-                # focus at the moment.
-                # "--eliminate-empty-tensors",
-                "--empty-tensor-to-alloc-tensor",
-                "--one-shot-bufferize=allow-return-allocs-from-loops=true",
+        lowering_mode = _get_lowering_mode()
+        common_prefix = [
+            # Note: eliminate-empty-tensors fails when there are multiple func.return ops
+            # in a single kernel which are the results of early returns.
+            # See python/examples/test_early_return.py for examples.
+            # We disable this pass for now since performance on CPU isn't the main
+            # focus at the moment.
+            # "--eliminate-empty-tensors",
+            "--empty-tensor-to-alloc-tensor",
+            "--one-shot-bufferize=allow-return-allocs-from-loops=true",
+        ]
+        if lowering_mode == "vir_vector":
+            # Keep this order aligned with ../Makefile (MATMUL_PIPELINE).
+            lowering_passes = [
                 "--lower-linalg-to-vir",
                 "--lower-vir-to-vector=vector-width=4",
                 "--cse",
@@ -125,15 +142,47 @@ def _ttsharedir_to_llir(ttsharedir: str):
                 "--convert-vector-to-llvm",
                 "--convert-arith-to-llvm",
                 "--convert-math-to-llvm",
+                "--convert-complex-to-llvm",
+                "--convert-index-to-llvm",
+                "--memref-expand",
                 "--finalize-memref-to-llvm",
                 "--convert-func-to-llvm",
-                # Remove all unrealized casts created
+                "--lower-affine",
+                "--convert-arith-to-llvm",
                 "--reconcile-unrealized-casts",
-                "--mlir-print-debuginfo",
-                "-o",
-                llmlir_path,
             ]
+        else:
+            lowering_passes = [
+                "--convert-linalg-to-affine-loops",
+                "--lower-affine",
+                "--convert-linalg-to-loops",
+                "--expand-strided-metadata",
+                "--convert-scf-to-cf",
+                "--convert-cf-to-llvm",
+                "--convert-vector-to-llvm",
+                "--convert-arith-to-llvm",
+                "--convert-math-to-llvm",
+                "--convert-complex-to-llvm",
+                "--convert-index-to-llvm",
+                "--memref-expand",
+                "--finalize-memref-to-llvm",
+                "--convert-func-to-llvm",
+                "--lower-affine",
+                "--convert-arith-to-llvm",
+                "--reconcile-unrealized-casts",
+            ]
+
+        buddy_opt_args = (
+            [buddy_opt_path, ttshared_path]
+            + common_prefix
+            + lowering_passes
+            + ["--mlir-print-debuginfo", "-o", llmlir_path]
         )
+        _dump_text_if_needed(
+            "buddy-opt.args.txt",
+            "mode=" + lowering_mode + "\n" + " ".join(buddy_opt_args[2:]) + "\n",
+        )
+        subprocess.check_call(buddy_opt_args)
 
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = _get_llvm_bin_path("mlir-translate")
