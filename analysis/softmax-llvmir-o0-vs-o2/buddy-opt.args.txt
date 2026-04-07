@@ -1,0 +1,2 @@
+mode=linalg_loops
+--empty-tensor-to-alloc-tensor --one-shot-bufferize=allow-return-allocs-from-loops=true --convert-linalg-to-affine-loops --lower-affine --convert-linalg-to-loops --expand-strided-metadata --convert-scf-to-cf --convert-cf-to-llvm --convert-vector-to-llvm --convert-arith-to-llvm --convert-math-to-llvm --convert-complex-to-llvm --convert-index-to-llvm --memref-expand --finalize-memref-to-llvm --convert-func-to-llvm --lower-affine --convert-arith-to-llvm --reconcile-unrealized-casts --mlir-print-debuginfo -o /tmp/tmpkwarco34/ll.mlir

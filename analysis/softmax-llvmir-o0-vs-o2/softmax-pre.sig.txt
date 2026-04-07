@@ -1,0 +1,13 @@
+6:declare ptr @malloc(i64)
+27:  %32 = call ptr @malloc(i64 4096)
+68:  %62 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, i64 1, align 8
+71:  %64 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, i64 1, align 8
+74:  %66 = alloca { i64, ptr }, i64 1, align 8
+76:  %67 = alloca { i64, ptr }, i64 1, align 8
+80:  %68 = call ptr @malloc(i64 68)
+108:  %88 = call ptr @malloc(i64 4160)
+169:  %128 = call ptr @malloc(i64 68)
+255:  %192 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, i64 1, align 8
+258:  %194 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, i64 1, align 8
+261:  %196 = alloca { i64, ptr }, i64 1, align 8
+263:  %197 = alloca { i64, ptr }, i64 1, align 8

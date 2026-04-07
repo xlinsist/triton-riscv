@@ -1,0 +1,13 @@
+7:declare noalias noundef ptr @malloc(i64 noundef) local_unnamed_addr #0
+18:  %22 = tail call dereferenceable_or_null(4096) ptr @malloc(i64 4096)
+32:  %29 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, align 8
+42:  %30 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, align 8
+52:  %31 = alloca { i64, ptr }, align 8
+56:  %32 = alloca { i64, ptr }, align 8
+62:  %33 = call dereferenceable_or_null(68) ptr @malloc(i64 68)
+82:  %47 = call dereferenceable_or_null(4160) ptr @malloc(i64 4160)
+120:  %72 = call dereferenceable_or_null(68) ptr @malloc(i64 68)
+165:  %103 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, align 8
+175:  %104 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, align 8
+185:  %105 = alloca { i64, ptr }, align 8
+189:  %106 = alloca { i64, ptr }, align 8

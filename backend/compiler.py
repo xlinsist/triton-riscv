@@ -76,6 +76,21 @@ def _get_sanitizer_type():
     return sanitizer_type
 
 
+def _get_llvm_opt_level() -> int:
+    level_str = os.getenv("TRITON_RISCV_LLVM_OPT_LEVEL", "2").strip()
+    try:
+        level = int(level_str)
+    except ValueError:
+        raise Exception(
+            f"TRITON_RISCV_LLVM_OPT_LEVEL={level_str} is invalid, expected 0/1/2/3."
+        )
+    if level not in (0, 1, 2, 3):
+        raise Exception(
+            f"TRITON_RISCV_LLVM_OPT_LEVEL={level_str} is invalid, expected 0/1/2/3."
+        )
+    return level
+
+
 def _ttir_to_ttsharedir(mod):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
@@ -194,8 +209,27 @@ def _ttsharedir_to_llir(ttsharedir: str):
 
 
 def _optimize_llir(llir: str):
-    # We don't apply any optimizations now, but we can add passes if needed.
-    return llir
+    opt_level = _get_llvm_opt_level()
+    if opt_level == 0:
+        return llir
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src_path = os.path.join(tmpdir, "kernel.ll")
+        dst_path = os.path.join(tmpdir, "kernel.opt.ll")
+        Path(src_path).write_text(llir)
+        opt_path = _get_llvm_bin_path("opt")
+        # Use the new pass manager default pipeline at requested level.
+        subprocess.check_call(
+            [
+                opt_path,
+                f"-passes=default<O{opt_level}>",
+                "-S",
+                src_path,
+                "-o",
+                dst_path,
+            ]
+        )
+        return Path(dst_path).read_text()
 
 
 def _llir_to_bin(llir: str, metadata):
@@ -242,8 +276,10 @@ def _llir_to_bin(llir: str, metadata):
 
             # compile to object file
             clang_path = _get_llvm_bin_path("clang++")
+            opt_level = _get_llvm_opt_level()
 
             subprocess_args = [clang_path, "-c", instrumented_src_path, "-o", dst_path]
+            subprocess_args.append(f"-O{opt_level}")
 
             if sanitizer_type == "asan":
                 subprocess_args.extend(
@@ -255,11 +291,13 @@ def _llir_to_bin(llir: str, metadata):
             subprocess.check_call(subprocess_args)
         else:
             llc_path = _get_llvm_bin_path("llc")
+            opt_level = _get_llvm_opt_level()
             llc_args = [
                 llc_path,
                 src_path,
                 "-filetype=obj",
                 "-relocation-model=pic",
+                f"-O{opt_level}",
                 "-o",
                 dst_path,
             ]
