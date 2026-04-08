@@ -69,6 +69,22 @@ static bool staticSizeCompatible1D(RankedTensorType tensorType,
          tensorSize == memrefSize;
 }
 
+static bool staticShapeCompatible(RankedTensorType tensorType,
+                                  MemRefType memrefType) {
+  if (tensorType.getRank() != memrefType.getRank()) {
+    return false;
+  }
+
+  for (auto [tensorDim, memrefDim] :
+       llvm::zip(tensorType.getShape(), memrefType.getShape())) {
+    if (!ShapedType::isDynamic(tensorDim) && !ShapedType::isDynamic(memrefDim) &&
+        tensorDim != memrefDim) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static memref::SubViewOp createFullSubview1D(Location loc, Value source,
                                              OpBuilder &b) {
   auto c0 = b.create<arith::ConstantIndexOp>(loc, 0);
@@ -116,6 +132,21 @@ static memref::SubViewOp getSubview(int rank, ArrayRef<OpFoldResult> dims,
 
   return b.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType), source,
                                      offsets, dims, strides);
+}
+
+static SmallVector<Value> getDynamicTensorDims(Location loc,
+                                               RankedTensorType tensorType,
+                                               Value sourceMemRef,
+                                               OpBuilder &b) {
+  SmallVector<Value> dynamicDims;
+  dynamicDims.reserve(tensorType.getNumDynamicDims());
+  for (int64_t i = 0, e = tensorType.getRank(); i < e; ++i) {
+    if (!tensorType.isDynamicDim(i)) {
+      continue;
+    }
+    dynamicDims.push_back(b.create<memref::DimOp>(loc, sourceMemRef, i));
+  }
+  return dynamicDims;
 }
 
 static Type getElementTypeStructuredPtr(tts::MakeTensorPtrOp op) {
@@ -717,7 +748,7 @@ private:
   bool enableTensorFirstVectorCpu;
 
   bool isTensorFirstFastPathCandidate(tts::LoadOp op, Value ptr) const {
-    if (!enableTensorFirstVectorCpu || op.hasMask() || op.getOther()) {
+    if (!enableTensorFirstVectorCpu) {
       return false;
     }
 
@@ -737,24 +768,65 @@ private:
     if (tensorType.getElementType() != memrefType.getElementType()) {
       return false;
     }
-    return hasUnitStride1DLayout(memrefType) &&
-           staticSizeCompatible1D(tensorType, memrefType);
+    return staticShapeCompatible(tensorType, memrefType);
   }
 
-  LogicalResult rewriteTensorFirstLoad(tts::LoadOp op, Value ptr,
-                                       ConversionPatternRewriter &rewriter) const {
+  Value createTensorFromMemref(tts::LoadOp op, Value source,
+                               RankedTensorType targetTensorType,
+                               ConversionPatternRewriter &rewriter) const {
+    auto loc = op->getLoc();
+    auto sourceType = cast<MemRefType>(source.getType());
+    auto dynamicTensorType =
+        RankedTensorType::get(sourceType.getShape(), sourceType.getElementType());
+    Value tensor = rewriter.create<bufferization::ToTensorOp>(
+        loc, dynamicTensorType, source, true /*restrict*/,
+        false /*writable*/);
+    if (tensor.getType() != targetTensorType) {
+      tensor = rewriter.create<tensor::CastOp>(loc, targetTensorType, tensor);
+    }
+    return tensor;
+  }
+
+  LogicalResult rewriteTensorFirstUnmaskedLoad(
+      tts::LoadOp op, Value ptr, ConversionPatternRewriter &rewriter) const {
+    auto tensorType = cast<RankedTensorType>(op.getType());
+    Value tensor = createTensorFromMemref(op, ptr, tensorType, rewriter);
+    rewriter.replaceOp(op, tensor);
+    return success();
+  }
+
+  LogicalResult rewriteTensorFirstMaskedLoad(
+      tts::LoadOp op, Value ptr, ConversionPatternRewriter &rewriter) const {
+    assert(op.hasMask());
+
     auto loc = op->getLoc();
     auto tensorType = cast<RankedTensorType>(op.getType());
-    auto ptrSubview = createFullSubview1D(loc, ptr, rewriter);
-    auto dynamicTensorType =
-        RankedTensorType::get({ShapedType::kDynamic}, tensorType.getElementType());
-    Value tensor = rewriter.create<bufferization::ToTensorOp>(
-        loc, dynamicTensorType, ptrSubview, true /*restrict*/,
-        false /*writable*/);
-    if (tensor.getType() != tensorType) {
-      tensor = rewriter.create<tensor::CastOp>(loc, tensorType, tensor);
+    int64_t rank = tensorType.getRank();
+    SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
+
+    auto srcSubview = getSubview(rank, mixedDims, ptr, loc, rewriter);
+    auto srcSubviewType = cast<MemRefType>(srcSubview.getType());
+    auto sliceTensorType =
+        RankedTensorType::get(srcSubviewType.getShape(), tensorType.getElementType());
+    Value sliceTensor =
+        createTensorFromMemref(op, srcSubview, sliceTensorType, rewriter);
+
+    auto dynamicDims = getDynamicTensorDims(loc, tensorType, ptr, rewriter);
+    Value fullTensor = rewriter.create<tensor::EmptyOp>(
+        loc, tensorType.getShape(), tensorType.getElementType(), dynamicDims);
+
+    if (Value other = op.getOther()) {
+      fullTensor = rewriter
+                       .create<linalg::FillOp>(loc, ValueRange{other},
+                                               ValueRange{fullTensor})
+                       .getResult(0);
     }
-    rewriter.replaceOp(op, tensor);
+
+    SmallVector<OpFoldResult> offsets(rank, rewriter.getIndexAttr(0));
+    SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
+    Value result = rewriter.create<tensor::InsertSliceOp>(
+        loc, sliceTensor, fullTensor, offsets, mixedDims, strides);
+    rewriter.replaceOp(op, result);
     return success();
   }
 
@@ -1170,7 +1242,8 @@ public:
 
     LogicalResult result = failure();
     if (isTensorFirstFastPathCandidate(op, ptr)) {
-      result = rewriteTensorFirstLoad(op, ptr, rewriter);
+      result = op.hasMask() ? rewriteTensorFirstMaskedLoad(op, ptr, rewriter)
+                            : rewriteTensorFirstUnmaskedLoad(op, ptr, rewriter);
     } else if (op.hasMask()) {
       result = rewriteMaskedLoad(op, ptr, rewriter);
     } else {
