@@ -91,6 +91,18 @@ def _get_llvm_opt_level() -> int:
     return level
 
 
+def _get_structured_ldst_mode() -> str:
+    mode = os.getenv(
+        "TRITON_RISCV_STRUCTURED_LDST_MODE", "legacy_memref_bridge"
+    ).strip()
+    if mode not in ("legacy_memref_bridge", "tensor_first_vector_cpu"):
+        raise Exception(
+            "TRITON_RISCV_STRUCTURED_LDST_MODE must be one of: "
+            "legacy_memref_bridge, tensor_first_vector_cpu"
+        )
+    return mode
+
+
 def _ttir_to_ttsharedir(mod):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
@@ -101,10 +113,18 @@ def _ttir_to_ttsharedir(mod):
         _dump_ir_if_needed([src_path])
         triton_shared_opt_path = _get_triton_shared_opt_path()
 
+        structured_ldst_mode = _get_structured_ldst_mode()
+        triton_to_linalg_pass = "--triton-to-linalg-experimental"
+        if structured_ldst_mode == "tensor_first_vector_cpu":
+            triton_to_linalg_pass = (
+                "--triton-to-linalg-experimental="
+                "structured-ldst-mode=tensor-first-vector-cpu"
+            )
+
         subprocess_args = [
             triton_shared_opt_path,
             src_path,
-            "--triton-to-linalg-experimental",
+            triton_to_linalg_pass,
             "--mlir-print-debuginfo",
             "-o",
             dst_path,
