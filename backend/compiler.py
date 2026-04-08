@@ -103,6 +103,41 @@ def _get_structured_ldst_mode() -> str:
     return mode
 
 
+def _get_memopt_profile() -> str:
+    profile = os.getenv("TRITON_RISCV_MEMOPT_PROFILE", "none").strip().lower()
+    if profile not in ("none", "stack", "stack_copy"):
+        raise Exception(
+            "TRITON_RISCV_MEMOPT_PROFILE must be one of: none, stack, stack_copy"
+        )
+    return profile
+
+
+def _get_memopt_stack_max_alloc_bytes() -> int:
+    value = os.getenv("TRITON_RISCV_MEMOPT_STACK_MAX_ALLOC_BYTES", "65536").strip()
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise Exception(
+            "TRITON_RISCV_MEMOPT_STACK_MAX_ALLOC_BYTES must be a positive integer."
+        )
+    if parsed <= 0:
+        raise Exception(
+            "TRITON_RISCV_MEMOPT_STACK_MAX_ALLOC_BYTES must be a positive integer."
+        )
+    return parsed
+
+
+def _get_memopt_stack_max_rank() -> int:
+    value = os.getenv("TRITON_RISCV_MEMOPT_STACK_MAX_RANK", "4").strip()
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise Exception("TRITON_RISCV_MEMOPT_STACK_MAX_RANK must be an integer >= 0.")
+    if parsed < 0:
+        raise Exception("TRITON_RISCV_MEMOPT_STACK_MAX_RANK must be an integer >= 0.")
+    return parsed
+
+
 def _ttir_to_ttsharedir(mod):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
@@ -163,6 +198,21 @@ def _ttsharedir_to_llir(ttsharedir: str):
             "--empty-tensor-to-alloc-tensor",
             "--one-shot-bufferize=allow-return-allocs-from-loops=true",
         ]
+        memopt_profile = _get_memopt_profile()
+        if memopt_profile in ("stack", "stack_copy"):
+            common_prefix.append(
+                "--promote-buffers-to-stack="
+                f"max-alloc-size-in-bytes={_get_memopt_stack_max_alloc_bytes()} "
+                f"max-rank-of-allocated-memref={_get_memopt_stack_max_rank()}"
+            )
+        if memopt_profile == "stack_copy":
+            common_prefix += [
+                "--convert-bufferization-to-memref",
+                "--fold-memref-alias-ops",
+                "--eliminate-memref-copy",
+                "--canonicalize",
+                "--cse",
+            ]
         if lowering_mode == "vir_vector":
             # Keep this order aligned with ../Makefile (MATMUL_PIPELINE).
             lowering_passes = [
@@ -215,7 +265,13 @@ def _ttsharedir_to_llir(ttsharedir: str):
         )
         _dump_text_if_needed(
             "buddy-opt.args.txt",
-            "mode=" + lowering_mode + "\n" + " ".join(buddy_opt_args[2:]) + "\n",
+            "mode="
+            + lowering_mode
+            + "\nmemopt_profile="
+            + memopt_profile
+            + "\n"
+            + " ".join(buddy_opt_args[2:])
+            + "\n",
         )
         subprocess.check_call(buddy_opt_args)
 
