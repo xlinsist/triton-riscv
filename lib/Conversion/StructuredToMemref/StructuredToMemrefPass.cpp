@@ -96,8 +96,8 @@ public:
 
     PtrToUnrankedMemrefConverter typeConverter;
 
-    triton::populateStructuredToMemrefConversionPatterns(patterns,
-                                                         typeConverter);
+    triton::populateStructuredToMemrefConversionPatterns(
+        patterns, typeConverter, enableTensorFirstVectorCpu);
 
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
       signalPassFailure();
@@ -107,6 +107,8 @@ public:
 } // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>>
-triton::createStructuredToMemrefPass() {
-  return std::make_unique<StructuredToMemrefPass>();
+triton::createStructuredToMemrefPass(bool enableTensorFirstVectorCpu) {
+  StructuredToMemrefOptions options;
+  options.enableTensorFirstVectorCpu = enableTensorFirstVectorCpu;
+  return std::make_unique<StructuredToMemrefPass>(options);
 }

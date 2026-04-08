@@ -18,6 +18,8 @@ def TritonToLinalgExperimental : Pass<"triton-to-linalg-experimental", "mlir::Mo
              "Enable make_gather_scatter_tptr support">,
       Option<"enableCollapseShape", "enable-collapse-shape", "bool", /*default*/"false",
              "Enable collapse shape pass">,
+      Option<"structuredLdstMode", "structured-ldst-mode", "std::string", /*default*/"\"legacy_memref_bridge\"",
+             "Structured load/store lowering mode: legacy_memref_bridge | tensor-first-vector-cpu">,
   ];
 }
 

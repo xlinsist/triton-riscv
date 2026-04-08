@@ -14,9 +14,12 @@ namespace triton {
 #include "triton-shared/Conversion/StructuredToMemref/Passes.h.inc"
 
 void populateStructuredToMemrefConversionPatterns(RewritePatternSet &patterns,
-                                                  TypeConverter &typeConverter);
+                                                  TypeConverter &typeConverter,
+                                                  bool enableTensorFirstVectorCpu =
+                                                      false);
 
-std::unique_ptr<OperationPass<ModuleOp>> createStructuredToMemrefPass();
+std::unique_ptr<OperationPass<ModuleOp>>
+createStructuredToMemrefPass(bool enableTensorFirstVectorCpu = false);
 
 } // namespace triton
 } // namespace mlir

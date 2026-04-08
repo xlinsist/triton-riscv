@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR//MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -47,6 +48,41 @@ using namespace mlir;
 
 static const std::string WRAP_SIDE_BY_SIDE = "wrap_side_by_side";
 static const std::string WRAP_STACKED = "wrap_stacked";
+
+static bool hasUnitStride1DLayout(MemRefType memrefType) {
+  if (memrefType.getRank() != 1) {
+    return false;
+  }
+  auto stridesAndOffset = memrefType.getStridesAndOffset();
+  int64_t stride = stridesAndOffset.first[0];
+  return stride == 1;
+}
+
+static bool staticSizeCompatible1D(RankedTensorType tensorType,
+                                   MemRefType memrefType) {
+  if (tensorType.getRank() != 1 || memrefType.getRank() != 1) {
+    return false;
+  }
+  int64_t tensorSize = tensorType.getShape()[0];
+  int64_t memrefSize = memrefType.getShape()[0];
+  return tensorSize == ShapedType::kDynamic || memrefSize == ShapedType::kDynamic ||
+         tensorSize == memrefSize;
+}
+
+static memref::SubViewOp createFullSubview1D(Location loc, Value source,
+                                             OpBuilder &b) {
+  auto c0 = b.create<arith::ConstantIndexOp>(loc, 0);
+  auto c1 = b.create<arith::ConstantIndexOp>(loc, 1);
+  auto size = b.create<memref::DimOp>(loc, source, 0).getResult();
+  SmallVector<OpFoldResult> offsets = {c0.getResult()};
+  SmallVector<OpFoldResult> sizes = {size};
+  SmallVector<OpFoldResult> strides = {c1.getResult()};
+  auto srcType = cast<MemRefType>(source.getType());
+  auto subviewType =
+      memref::SubViewOp::inferResultType(srcType, offsets, sizes, strides);
+  return b.create<memref::SubViewOp>(loc, cast<MemRefType>(subviewType), source,
+                                     offsets, sizes, strides);
+}
 
 static memref::SubViewOp getSubview(int rank, ArrayRef<OpFoldResult> dims,
                                     Value source, Location loc, OpBuilder &b) {
@@ -619,6 +655,51 @@ struct MakeGatherScatterTensorPtrConverter
 
 struct LoadConverter : public OpConversionPattern<tts::LoadOp> {
 private:
+  bool enableTensorFirstVectorCpu;
+
+  bool isTensorFirstFastPathCandidate(tts::LoadOp op, Value ptr) const {
+    if (!enableTensorFirstVectorCpu || op.hasMask() || op.getOther()) {
+      return false;
+    }
+
+    auto ptrDefiningOp = ptr.getDefiningOp();
+    if (ptrDefiningOp &&
+        (ptrDefiningOp->hasAttr(WRAP_SIDE_BY_SIDE) ||
+         ptrDefiningOp->hasAttr(WRAP_STACKED) ||
+         isa<tts::MakeGatherScatterTensorPtrOp>(ptrDefiningOp))) {
+      return false;
+    }
+
+    auto tensorType = dyn_cast<RankedTensorType>(op.getType());
+    auto memrefType = dyn_cast<MemRefType>(ptr.getType());
+    if (!tensorType || !memrefType) {
+      return false;
+    }
+    if (tensorType.getElementType() != memrefType.getElementType()) {
+      return false;
+    }
+    return hasUnitStride1DLayout(memrefType) &&
+           staticSizeCompatible1D(tensorType, memrefType);
+  }
+
+  LogicalResult rewriteTensorFirstLoad(tts::LoadOp op, Value ptr,
+                                       ConversionPatternRewriter &rewriter) const {
+    auto loc = op->getLoc();
+    auto tensorType = cast<RankedTensorType>(op.getType());
+    auto ptrSubview = createFullSubview1D(loc, ptr, rewriter);
+    auto dynamicTensorType =
+        RankedTensorType::get({ShapedType::kDynamic}, tensorType.getElementType());
+    Value tensor = rewriter.create<bufferization::ToTensorOp>(
+        loc, dynamicTensorType, ptrSubview, true /*restrict*/,
+        false /*writable*/);
+    if (tensor.getType() != tensorType) {
+      tensor = rewriter.create<tensor::CastOp>(loc, tensorType, tensor);
+    }
+    rewriter.replaceOp(op, tensor);
+    return success();
+  }
+
+private:
   using OpConversionPattern<tts::LoadOp>::OpConversionPattern;
 
   void createSideBySideCopies(Value block1, Value block2, Value dst,
@@ -993,8 +1074,10 @@ private:
   }
 
 public:
-  LoadConverter(const TypeConverter &typeConverter, MLIRContext *context)
-      : OpConversionPattern<tts::LoadOp>(typeConverter, context) {}
+  LoadConverter(const TypeConverter &typeConverter,
+                bool enableTensorFirstVectorCpu, MLIRContext *context)
+      : OpConversionPattern<tts::LoadOp>(typeConverter, context),
+        enableTensorFirstVectorCpu(enableTensorFirstVectorCpu) {}
 
   LogicalResult
   matchAndRewrite(tts::LoadOp op, OpAdaptor adaptor,
@@ -1003,6 +1086,10 @@ public:
     if (auto gatherScatterPtr =
             ptr.getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
       return rewriteGather(gatherScatterPtr, op, adaptor.getPtr(), rewriter);
+    }
+
+    if (isTensorFirstFastPathCandidate(op, adaptor.getPtr())) {
+      return rewriteTensorFirstLoad(op, adaptor.getPtr(), rewriter);
     }
 
     if (op.hasMask()) {
@@ -1015,6 +1102,50 @@ public:
 
 struct StoreConverter : public OpConversionPattern<tts::StoreOp> {
 private:
+  bool enableTensorFirstVectorCpu;
+
+  bool isTensorFirstFastPathCandidate(tts::StoreOp op, Value ptr) const {
+    if (!enableTensorFirstVectorCpu || op.hasMask()) {
+      return false;
+    }
+
+    auto ptrDefiningOp = ptr.getDefiningOp();
+    if (ptrDefiningOp &&
+        (ptrDefiningOp->hasAttr(WRAP_SIDE_BY_SIDE) ||
+         ptrDefiningOp->hasAttr(WRAP_STACKED) ||
+         isa<tts::MakeGatherScatterTensorPtrOp>(ptrDefiningOp))) {
+      return false;
+    }
+
+    auto stValType = dyn_cast<RankedTensorType>(op.getValue().getType());
+    auto memrefType = dyn_cast<MemRefType>(ptr.getType());
+    if (!stValType || !memrefType) {
+      return false;
+    }
+    if (stValType.getElementType() != memrefType.getElementType()) {
+      return false;
+    }
+    return hasUnitStride1DLayout(memrefType) &&
+           staticSizeCompatible1D(stValType, memrefType);
+  }
+
+  LogicalResult rewriteTensorFirstStore(tts::StoreOp op, Value ptr, Value stVal,
+                                        ConversionPatternRewriter &rewriter) const {
+    auto loc = op->getLoc();
+    auto ptrSubview = createFullSubview1D(loc, ptr, rewriter);
+    auto srcTensorType = cast<RankedTensorType>(stVal.getType());
+    auto dynamicTensorType =
+        RankedTensorType::get({ShapedType::kDynamic}, srcTensorType.getElementType());
+    if (srcTensorType != dynamicTensorType) {
+      stVal = rewriter.create<tensor::CastOp>(loc, dynamicTensorType, stVal);
+    }
+    auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+        loc, stVal, ptrSubview);
+    storeOp.setWritable(true);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
   using OpConversionPattern<tts::StoreOp>::OpConversionPattern;
 
   static tensor::ExtractSliceOp
@@ -1157,8 +1288,10 @@ private:
   }
 
 public:
-  StoreConverter(const TypeConverter &typeConverter, MLIRContext *context)
-      : OpConversionPattern<tts::StoreOp>(typeConverter, context) {}
+  StoreConverter(const TypeConverter &typeConverter,
+                 bool enableTensorFirstVectorCpu, MLIRContext *context)
+      : OpConversionPattern<tts::StoreOp>(typeConverter, context),
+        enableTensorFirstVectorCpu(enableTensorFirstVectorCpu) {}
 
   LogicalResult
   matchAndRewrite(tts::StoreOp op, OpAdaptor adaptor,
@@ -1169,6 +1302,11 @@ public:
             op.getPtr().getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
       return rewriteScatter(gatherScatterPtr, op, adaptor.getPtr(),
                             adaptor.getValue(), rewriter);
+    }
+
+    if (isTensorFirstFastPathCandidate(op, adaptor.getPtr())) {
+      return rewriteTensorFirstStore(op, adaptor.getPtr(), adaptor.getValue(),
+                                     rewriter);
     }
 
     auto ptr = adaptor.getPtr();
@@ -1199,8 +1337,11 @@ public:
 } // namespace
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(
-    RewritePatternSet &patterns, TypeConverter &typeConverter) {
+    RewritePatternSet &patterns, TypeConverter &typeConverter,
+    bool enableTensorFirstVectorCpu) {
   patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter>(
       typeConverter, patterns.getContext());
-  patterns.add<LoadConverter, StoreConverter>(patterns.getContext());
+  patterns.add<LoadConverter, StoreConverter>(typeConverter,
+                                              enableTensorFirstVectorCpu,
+                                              patterns.getContext());
 }

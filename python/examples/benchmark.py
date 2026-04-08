@@ -15,6 +15,7 @@ def select_cpu_backend():
 
 def measure(
     repeats=20,
+    warmup=5,
     percentiles=(),
     timers={"Wall": time.perf_counter, "CPU": time.process_time},
 ):
@@ -41,11 +42,14 @@ def measure(
         @wraps(func)
         def wrapper(*args, **kwargs):
             print(
-                f"{func.__name__}{args} {kwargs}, {repeats} times, all results in seconds"
+                f"{func.__name__}{args} {kwargs}, warmup={warmup}, repeats={repeats}, all results in seconds"
             )
             times = {}
             for t, _ in timers.items():
                 times[t] = []
+
+            for _ in range(warmup):
+                result = func(*args, **kwargs)
 
             for _ in range(repeats):
                 starts = {}
