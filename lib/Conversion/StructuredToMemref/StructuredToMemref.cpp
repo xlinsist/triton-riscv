@@ -215,6 +215,43 @@ static OpFoldResult accumulateTargetOffset(Location loc,
   return targetOffset;
 }
 
+static FailureOr<Value>
+materializeStructuredTPtrMemRef(tts::MakeTensorPtrOp op, Location loc,
+                                ConversionPatternRewriter &rewriter) {
+  if (!op.isStructuredPtr()) {
+    return failure();
+  }
+
+  Value base = op.getBase();
+  auto elementType = getElementTypeStructuredPtr(op);
+  if (!isa<MemRefType, UnrankedMemRefType>(base.getType())) {
+    if (!isa<triton::PointerType>(base.getType())) {
+      return failure();
+    }
+    auto unrankedType = UnrankedMemRefType::get(elementType, 0);
+    base = rewriter
+               .create<UnrealizedConversionCastOp>(loc, unrankedType, base)
+               .getResult(0);
+  }
+
+  auto mixedStrides = getMixedStridesForMemref(op, rewriter);
+  SmallVector<int64_t> staticStrides;
+  SmallVector<Value> dynamicStrides;
+  dispatchIndexOpFoldResults(mixedStrides, dynamicStrides, staticStrides);
+
+  auto targetOffset = accumulateTargetOffset(loc, op.getMixedOffsets(), rewriter);
+  auto staticTargetOffset = getIntAttr(targetOffset);
+  ArrayRef<int64_t> resultShape = cast<ShapedType>(op.getType()).getShape();
+  auto resultType = getResultMemrefType(
+      op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
+      resultShape);
+
+  return rewriter
+      .create<memref::ReinterpretCastOp>(loc, resultType, base, targetOffset,
+                                         op.getMixedSizes(), mixedStrides)
+      .getResult();
+}
+
 static Value rewriteGatherScatterPtrElement(
     ArrayRef<int64_t> resultShape, tts::MakeGatherScatterTensorPtrOp op,
     Value basePtr, Value gatherOffsetElt, int gatherDim,
@@ -848,13 +885,11 @@ private:
     return {sv1, sv2};
   }
 
-  LogicalResult
-  rewriteStructuredLoad(tts::LoadOp op, OpAdaptor adaptor,
-                        ConversionPatternRewriter &rewriter) const {
+  LogicalResult rewriteStructuredLoad(tts::LoadOp op, Value ptr,
+                                      ConversionPatternRewriter &rewriter) const {
     assert(!op.hasMask());
 
     auto loc = op->getLoc();
-    auto ptr = adaptor.getPtr();
     auto other = op.getOther();
 
     auto tensorType = cast<RankedTensorType>(op.getType());
@@ -901,13 +936,11 @@ private:
     return success();
   }
 
-  LogicalResult rewriteMaskedLoad(tts::LoadOp op, OpAdaptor adaptor,
+  LogicalResult rewriteMaskedLoad(tts::LoadOp op, Value ptr,
                                   ConversionPatternRewriter &rewriter) const {
     assert(op.hasMask());
 
     auto loc = op->getLoc();
-    auto ptr = adaptor.getPtr();
-
     auto tensorType = cast<RankedTensorType>(op.getType());
     auto elemType = tensorType.getElementType();
     auto rankedPtr =
@@ -1118,21 +1151,36 @@ public:
   LogicalResult
   matchAndRewrite(tts::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto ptr = op.getPtr();
+    auto originalPtr = op.getPtr();
     if (auto gatherScatterPtr =
-            ptr.getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
+            originalPtr.getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
       return rewriteGather(gatherScatterPtr, op, adaptor.getPtr(), rewriter);
     }
 
-    if (isTensorFirstFastPathCandidate(op, adaptor.getPtr())) {
-      return rewriteTensorFirstLoad(op, adaptor.getPtr(), rewriter);
+    auto ptr = adaptor.getPtr();
+    auto makeTPtr = originalPtr.getDefiningOp<tts::MakeTensorPtrOp>();
+    if (!isa<MemRefType, UnrankedMemRefType>(ptr.getType()) && makeTPtr) {
+      auto materialized = materializeStructuredTPtrMemRef(makeTPtr, op.getLoc(), rewriter);
+      if (failed(materialized)) {
+        return rewriter.notifyMatchFailure(
+            op, "expected pointer operand to lower from tts.make_tptr");
+      }
+      ptr = *materialized;
     }
 
-    if (op.hasMask()) {
-      return rewriteMaskedLoad(op, adaptor, rewriter);
+    LogicalResult result = failure();
+    if (isTensorFirstFastPathCandidate(op, ptr)) {
+      result = rewriteTensorFirstLoad(op, ptr, rewriter);
+    } else if (op.hasMask()) {
+      result = rewriteMaskedLoad(op, ptr, rewriter);
     } else {
-      return rewriteStructuredLoad(op, adaptor, rewriter);
+      result = rewriteStructuredLoad(op, ptr, rewriter);
     }
+
+    if (succeeded(result) && makeTPtr && makeTPtr->use_empty()) {
+      rewriter.eraseOp(makeTPtr);
+    }
+    return result;
   }
 };
 
@@ -1334,18 +1382,32 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
+    auto originalPtr = op.getPtr();
     if (auto gatherScatterPtr =
-            op.getPtr().getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
+            originalPtr.getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
       return rewriteScatter(gatherScatterPtr, op, adaptor.getPtr(),
                             adaptor.getValue(), rewriter);
     }
 
-    if (isTensorFirstFastPathCandidate(op, adaptor.getPtr())) {
-      return rewriteTensorFirstStore(op, adaptor.getPtr(), adaptor.getValue(),
-                                     rewriter);
+    auto ptr = adaptor.getPtr();
+    auto makeTPtr = originalPtr.getDefiningOp<tts::MakeTensorPtrOp>();
+    if (!isa<MemRefType, UnrankedMemRefType>(ptr.getType()) && makeTPtr) {
+      auto materialized = materializeStructuredTPtrMemRef(makeTPtr, op.getLoc(), rewriter);
+      if (failed(materialized)) {
+        return rewriter.notifyMatchFailure(
+            op, "expected pointer operand to lower from tts.make_tptr");
+      }
+      ptr = *materialized;
     }
 
-    auto ptr = adaptor.getPtr();
+    if (isTensorFirstFastPathCandidate(op, ptr)) {
+      auto res = rewriteTensorFirstStore(op, ptr, adaptor.getValue(), rewriter);
+      if (succeeded(res) && makeTPtr && makeTPtr->use_empty()) {
+        rewriter.eraseOp(makeTPtr);
+      }
+      return res;
+    }
+
     auto storeValue = op.getValue();
     auto storeTensorType = cast<RankedTensorType>(storeValue.getType());
     auto rank = storeTensorType.getRank();
@@ -1374,6 +1436,9 @@ public:
     }
 
     rewriter.eraseOp(op);
+    if (makeTPtr && makeTPtr->use_empty()) {
+      rewriter.eraseOp(makeTPtr);
+    }
     return success();
   }
 };
