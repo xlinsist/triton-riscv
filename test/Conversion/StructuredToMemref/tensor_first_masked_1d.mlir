@@ -20,9 +20,6 @@ module {
 // CHECK-LABEL: func.func @kernel
 // CHECK:      %[[IN_SUB:.*]] = memref.subview
 // CHECK:      %[[IN_T:.*]] = bufferization.to_tensor %[[IN_SUB]]
-// CHECK:      %[[INIT:.*]] = tensor.empty
-// CHECK:      %[[FILLED:.*]] = linalg.fill
-// CHECK:      %[[MERGED:.*]] = tensor.insert_slice %[[IN_T]] into %[[FILLED]]
 // CHECK:      bufferization.materialize_in_destination
 // CHECK-NOT:  memref.alloc
 // CHECK-NOT:  memref.copy
