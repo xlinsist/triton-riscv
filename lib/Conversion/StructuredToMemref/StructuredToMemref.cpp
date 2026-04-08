@@ -84,6 +84,28 @@ static memref::SubViewOp createFullSubview1D(Location loc, Value source,
                                      offsets, sizes, strides);
 }
 
+static FailureOr<Value>
+ensureRankedMemRef(Value source, int64_t rank, Type elementType, Location loc,
+                   ConversionPatternRewriter &rewriter) {
+  if (isa<MemRefType>(source.getType())) {
+    return source;
+  }
+
+  auto unrankedType = dyn_cast<UnrankedMemRefType>(source.getType());
+  if (!unrankedType || unrankedType.getElementType() != elementType) {
+    return failure();
+  }
+
+  SmallVector<int64_t> dynamicShape(rank, ShapedType::kDynamic);
+  SmallVector<int64_t> dynamicStrides(rank, ShapedType::kDynamic);
+  auto dynamicLayout = StridedLayoutAttr::get(rewriter.getContext(),
+                                              ShapedType::kDynamic,
+                                              dynamicStrides);
+  auto rankedType = MemRefType::get(dynamicShape, elementType, dynamicLayout,
+                                    unrankedType.getMemorySpace());
+  return rewriter.create<memref::CastOp>(loc, rankedType, source).getResult();
+}
+
 static memref::SubViewOp getSubview(int rank, ArrayRef<OpFoldResult> dims,
                                     Value source, Location loc, OpBuilder &b) {
   auto sourceType = cast<MemRefType>(source.getType());
@@ -837,6 +859,13 @@ private:
 
     auto tensorType = cast<RankedTensorType>(op.getType());
     auto elemType = tensorType.getElementType();
+    auto rankedPtr =
+        ensureRankedMemRef(ptr, tensorType.getRank(), elemType, loc, rewriter);
+    if (failed(rankedPtr)) {
+      return rewriter.notifyMatchFailure(
+          op, "expected pointer to lower to ranked/unranked memref");
+    }
+    ptr = *rankedPtr;
 
     auto alloc = rewriter.create<memref::AllocOp>(
         loc, MemRefType::get(tensorType.getShape(), elemType));
@@ -845,8 +874,8 @@ private:
     assert(!other && "other value used in non-masked load");
 
     auto ptrDefiningOp = ptr.getDefiningOp();
-    if (ptrDefiningOp->hasAttr(WRAP_SIDE_BY_SIDE) ||
-        ptrDefiningOp->hasAttr(WRAP_STACKED)) {
+    if (ptrDefiningOp && (ptrDefiningOp->hasAttr(WRAP_SIDE_BY_SIDE) ||
+                          ptrDefiningOp->hasAttr(WRAP_STACKED))) {
 
       auto unrealizedCast = cast<UnrealizedConversionCastOp>(ptrDefiningOp);
       auto memrefs = unrealizedCast.getOperands();
@@ -881,6 +910,13 @@ private:
 
     auto tensorType = cast<RankedTensorType>(op.getType());
     auto elemType = tensorType.getElementType();
+    auto rankedPtr =
+        ensureRankedMemRef(ptr, tensorType.getRank(), elemType, loc, rewriter);
+    if (failed(rankedPtr)) {
+      return rewriter.notifyMatchFailure(
+          op, "expected pointer to lower to ranked/unranked memref");
+    }
+    ptr = *rankedPtr;
 
     auto alloc = rewriter.create<memref::AllocOp>(
         loc, MemRefType::get(tensorType.getShape(), elemType));
@@ -894,8 +930,8 @@ private:
     }
 
     auto ptrDefiningOp = ptr.getDefiningOp();
-    if (ptrDefiningOp->hasAttr(WRAP_SIDE_BY_SIDE) ||
-        ptrDefiningOp->hasAttr(WRAP_STACKED)) {
+    if (ptrDefiningOp && (ptrDefiningOp->hasAttr(WRAP_SIDE_BY_SIDE) ||
+                          ptrDefiningOp->hasAttr(WRAP_STACKED))) {
 
       auto unrealizedCast = cast<UnrealizedConversionCastOp>(ptrDefiningOp);
 
@@ -1311,7 +1347,15 @@ public:
 
     auto ptr = adaptor.getPtr();
     auto storeValue = op.getValue();
-    auto rank = cast<RankedTensorType>(storeValue.getType()).getRank();
+    auto storeTensorType = cast<RankedTensorType>(storeValue.getType());
+    auto rank = storeTensorType.getRank();
+    auto rankedPtr = ensureRankedMemRef(ptr, rank, storeTensorType.getElementType(),
+                                        loc, rewriter);
+    if (failed(rankedPtr)) {
+      return rewriter.notifyMatchFailure(
+          op, "expected pointer to lower to ranked/unranked memref");
+    }
+    ptr = *rankedPtr;
 
     if (op.hasMask()) {
       auto mixedDims = op.getMixedMaskDims();
