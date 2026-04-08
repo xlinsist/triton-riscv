@@ -26,7 +26,8 @@ module {
     %ldptr = tt.addptr %in_ptrs, %idx : tensor<128x256x!tt.ptr<bf16>>, tensor<128x256xi32>
     %stptr = tt.addptr %out_ptrs, %idx : tensor<128x256x!tt.ptr<bf16>>, tensor<128x256xi32>
 
-    %other = arith.constant 0xFF80 : bf16
+    %other_s = arith.constant 0xFF80 : bf16
+    %other = tt.splat %other_s : bf16 -> tensor<128x256xbf16>
     %arg2s = tt.splat %arg2 : i32 -> tensor<128xi32>
     %mx = arith.cmpi slt, %x2, %arg2s : tensor<128xi32>
     %mxe = tt.expand_dims %mx {axis = 1 : i32} : tensor<128xi1> -> tensor<128x1xi1>

@@ -7,7 +7,8 @@ module {
     %range = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
     %ldptr = tt.addptr %in_ptrs, %range : tensor<128x!tt.ptr<bf16>>, tensor<128xi32>
     %stptr = tt.addptr %out_ptrs, %range : tensor<128x!tt.ptr<bf16>>, tensor<128xi32>
-    %other = arith.constant 0xFF80 : bf16
+    %other_s = arith.constant 0xFF80 : bf16
+    %other = tt.splat %other_s : bf16 -> tensor<128xbf16>
     %bound = tt.splat %arg2 : i32 -> tensor<128xi32>
     %mask = arith.cmpi slt, %range, %bound : tensor<128xi32>
     %vals = tt.load %ldptr, %mask, %other : tensor<128x!tt.ptr<bf16>>
