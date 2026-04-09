@@ -134,6 +134,30 @@ static memref::SubViewOp getSubview(int rank, ArrayRef<OpFoldResult> dims,
                                      offsets, dims, strides);
 }
 
+static void emit1DMemrefToMemrefCopyLoop(Location loc, Value srcSubview,
+                                         Value dstSubview, Value upperBound,
+                                         ConversionPatternRewriter &rewriter) {
+  auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  auto loop = rewriter.create<scf::ForOp>(loc, c0, upperBound, c1);
+  rewriter.setInsertionPointToStart(loop.getBody());
+  Value iv = loop.getInductionVar();
+  Value v = rewriter.create<memref::LoadOp>(loc, srcSubview, ValueRange{iv});
+  rewriter.create<memref::StoreOp>(loc, v, dstSubview, ValueRange{iv});
+}
+
+static void emit1DTensorToMemrefStoreLoop(Location loc, Value srcTensor,
+                                          Value dstSubview, Value upperBound,
+                                          ConversionPatternRewriter &rewriter) {
+  auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  auto loop = rewriter.create<scf::ForOp>(loc, c0, upperBound, c1);
+  rewriter.setInsertionPointToStart(loop.getBody());
+  Value iv = loop.getInductionVar();
+  Value v = rewriter.create<tensor::ExtractOp>(loc, srcTensor, ValueRange{iv});
+  rewriter.create<memref::StoreOp>(loc, v, dstSubview, ValueRange{iv});
+}
+
 static SmallVector<Value> getDynamicTensorDims(Location loc,
                                                RankedTensorType tensorType,
                                                Value sourceMemRef,
@@ -802,31 +826,27 @@ private:
     auto loc = op->getLoc();
     auto tensorType = cast<RankedTensorType>(op.getType());
     int64_t rank = tensorType.getRank();
+    if (rank != 1) {
+      return failure();
+    }
     SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
 
-    auto srcSubview = getSubview(rank, mixedDims, ptr, loc, rewriter);
-    auto srcSubviewType = cast<MemRefType>(srcSubview.getType());
-    auto sliceTensorType =
-        RankedTensorType::get(srcSubviewType.getShape(), tensorType.getElementType());
-    Value sliceTensor =
-        createTensorFromMemref(op, srcSubview, sliceTensorType, rewriter);
-
-    auto dynamicDims = getDynamicTensorDims(loc, tensorType, ptr, rewriter);
-    Value fullTensor = rewriter.create<tensor::EmptyOp>(
-        loc, tensorType.getShape(), tensorType.getElementType(), dynamicDims);
+    auto alloc = rewriter.create<memref::AllocOp>(
+        loc, MemRefType::get(tensorType.getShape(), tensorType.getElementType()));
 
     if (Value other = op.getOther()) {
-      fullTensor = rewriter
-                       .create<linalg::FillOp>(loc, ValueRange{other},
-                                               ValueRange{fullTensor})
-                       .getResult(0);
+      fillWithValue(loc, alloc, other, tensorType.getShape(), mixedDims,
+                    op.getStaticMaskDims(), rewriter);
     }
 
-    SmallVector<OpFoldResult> offsets(rank, rewriter.getIndexAttr(0));
-    SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
-    Value result = rewriter.create<tensor::InsertSliceOp>(
-        loc, sliceTensor, fullTensor, offsets, mixedDims, strides);
-    rewriter.replaceOp(op, result);
+    auto srcSubview = getSubview(rank, mixedDims, ptr, loc, rewriter);
+    auto dstSubview = getSubview(rank, mixedDims, alloc, loc, rewriter);
+    Value copyLen = ofrToIndexValue(mixedDims[0], loc, rewriter);
+    emit1DMemrefToMemrefCopyLoop(loc, srcSubview, dstSubview, copyLen, rewriter);
+
+    Value tensor = rewriter.create<bufferization::ToTensorOp>(
+        loc, tensorType, alloc, true /* restrict */, true /* writable */);
+    rewriter.replaceOp(op, tensor);
     return success();
   }
 
@@ -1262,7 +1282,7 @@ private:
   bool enableTensorFirstVectorCpu;
 
   bool isTensorFirstFastPathCandidate(tts::StoreOp op, Value ptr) const {
-    if (!enableTensorFirstVectorCpu || op.hasMask()) {
+    if (!enableTensorFirstVectorCpu) {
       return false;
     }
 
@@ -1299,6 +1319,23 @@ private:
     auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
         loc, stVal, ptrSubview);
     storeOp.setWritable(true);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  LogicalResult rewriteTensorFirstMaskedStore(
+      tts::StoreOp op, Value ptr, Value stVal,
+      ConversionPatternRewriter &rewriter) const {
+    assert(op.hasMask());
+    auto loc = op->getLoc();
+    auto storeTensorType = dyn_cast<RankedTensorType>(stVal.getType());
+    if (!storeTensorType || storeTensorType.getRank() != 1) {
+      return failure();
+    }
+    SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
+    auto dstSubview = getSubview(/*rank=*/1, mixedDims, ptr, loc, rewriter);
+    Value copyLen = ofrToIndexValue(mixedDims[0], loc, rewriter);
+    emit1DTensorToMemrefStoreLoop(loc, stVal, dstSubview, copyLen, rewriter);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1474,7 +1511,11 @@ public:
     }
 
     if (isTensorFirstFastPathCandidate(op, ptr)) {
-      auto res = rewriteTensorFirstStore(op, ptr, adaptor.getValue(), rewriter);
+      auto res = op.hasMask()
+                     ? rewriteTensorFirstMaskedStore(op, ptr, adaptor.getValue(),
+                                                     rewriter)
+                     : rewriteTensorFirstStore(op, ptr, adaptor.getValue(),
+                                               rewriter);
       if (succeeded(res) && makeTPtr && makeTPtr->use_empty()) {
         rewriter.eraseOp(makeTPtr);
       }
