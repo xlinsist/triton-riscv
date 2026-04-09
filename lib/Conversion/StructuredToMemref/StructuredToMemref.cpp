@@ -137,6 +137,7 @@ static memref::SubViewOp getSubview(int rank, ArrayRef<OpFoldResult> dims,
 static void emit1DMemrefToMemrefCopyLoop(Location loc, Value srcSubview,
                                          Value dstSubview, Value upperBound,
                                          ConversionPatternRewriter &rewriter) {
+  OpBuilder::InsertionGuard guard(rewriter);
   auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   auto loop = rewriter.create<scf::ForOp>(loc, c0, upperBound, c1);
@@ -149,6 +150,7 @@ static void emit1DMemrefToMemrefCopyLoop(Location loc, Value srcSubview,
 static void emit1DTensorToMemrefStoreLoop(Location loc, Value srcTensor,
                                           Value dstSubview, Value upperBound,
                                           ConversionPatternRewriter &rewriter) {
+  OpBuilder::InsertionGuard guard(rewriter);
   auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   auto loop = rewriter.create<scf::ForOp>(loc, c0, upperBound, c1);
@@ -835,13 +837,15 @@ private:
         loc, MemRefType::get(tensorType.getShape(), tensorType.getElementType()));
 
     if (Value other = op.getOther()) {
-      fillWithValue(loc, alloc, other, tensorType.getShape(), mixedDims,
+      fillWithValue(loc, alloc, other, tensorType.getShape(),
+                    std::move(mixedDims),
                     op.getStaticMaskDims(), rewriter);
     }
 
-    auto srcSubview = getSubview(rank, mixedDims, ptr, loc, rewriter);
-    auto dstSubview = getSubview(rank, mixedDims, alloc, loc, rewriter);
-    Value copyLen = ofrToIndexValue(mixedDims[0], loc, rewriter);
+    SmallVector<OpFoldResult> copyDims = op.getMixedMaskDims();
+    auto srcSubview = getSubview(rank, copyDims, ptr, loc, rewriter);
+    auto dstSubview = getSubview(rank, copyDims, alloc, loc, rewriter);
+    Value copyLen = ofrToIndexValue(copyDims[0], loc, rewriter);
     emit1DMemrefToMemrefCopyLoop(loc, srcSubview, dstSubview, copyLen, rewriter);
 
     Value tensor = rewriter.create<bufferization::ToTensorOp>(
