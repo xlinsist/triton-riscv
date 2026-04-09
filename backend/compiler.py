@@ -138,6 +138,24 @@ def _get_memopt_stack_max_rank() -> int:
     return parsed
 
 
+def _get_vector_width() -> int:
+    value = os.getenv("TRITON_RISCV_VECTOR_WIDTH", "16").strip()
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise Exception("TRITON_RISCV_VECTOR_WIDTH must be a positive integer.")
+    if parsed <= 0:
+        raise Exception("TRITON_RISCV_VECTOR_WIDTH must be a positive integer.")
+    return parsed
+
+
+def _get_vector_to_scf_mode() -> str:
+    mode = os.getenv("TRITON_RISCV_VECTOR_TO_SCF", "on").strip().lower()
+    if mode not in ("on", "off"):
+        raise Exception("TRITON_RISCV_VECTOR_TO_SCF must be one of: on, off")
+    return mode
+
+
 def _ttir_to_ttsharedir(mod):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
@@ -214,12 +232,13 @@ def _ttsharedir_to_llir(ttsharedir: str):
                 "--cse",
             ]
         if lowering_mode == "vir_vector":
+            vector_width = _get_vector_width()
+            vector_to_scf_mode = _get_vector_to_scf_mode()
             # Keep this order aligned with ../Makefile (MATMUL_PIPELINE).
             lowering_passes = [
                 "--lower-linalg-to-vir",
-                "--lower-vir-to-vector=vector-width=16",
+                f"--lower-vir-to-vector=vector-width={vector_width}",
                 "--cse",
-                "--convert-vector-to-scf",
                 "--expand-strided-metadata",
                 "--lower-affine",
                 "--convert-scf-to-cf",
@@ -236,6 +255,8 @@ def _ttsharedir_to_llir(ttsharedir: str):
                 "--convert-arith-to-llvm",
                 "--reconcile-unrealized-casts",
             ]
+            if vector_to_scf_mode == "on":
+                lowering_passes.insert(3, "--convert-vector-to-scf")
         else:
             lowering_passes = [
                 "--convert-linalg-to-affine-loops",

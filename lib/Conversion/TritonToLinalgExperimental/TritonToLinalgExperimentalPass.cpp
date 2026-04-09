@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -45,8 +46,9 @@ public:
                     linalg::LinalgDialect, affine::AffineDialect,
                     scf::SCFDialect, tensor::TensorDialect,
                     bufferization::BufferizationDialect, memref::MemRefDialect,
-                    ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
-                    tptr::TPtrDialect, ptr::PtrDialect>();
+                    vector::VectorDialect, ttx::TritonTilingExtDialect,
+                    tts::TritonStructuredDialect, tptr::TPtrDialect,
+                    ptr::PtrDialect>();
   }
 
   void runOnOperation() override {
