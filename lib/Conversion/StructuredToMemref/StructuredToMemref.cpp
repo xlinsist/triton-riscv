@@ -12,6 +12,7 @@
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -29,6 +30,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -138,6 +140,37 @@ static void emit1DMemrefToMemrefCopyLoop(Location loc, Value srcSubview,
                                          Value dstSubview, Value upperBound,
                                          ConversionPatternRewriter &rewriter) {
   OpBuilder::InsertionGuard guard(rewriter);
+  auto srcType = dyn_cast<MemRefType>(srcSubview.getType());
+  auto dstType = dyn_cast<MemRefType>(dstSubview.getType());
+
+  if (srcType && dstType && srcType.getRank() == 1 && dstType.getRank() == 1 &&
+      hasUnitStride1DLayout(srcType) && hasUnitStride1DLayout(dstType)) {
+    auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto cVec = rewriter.create<arith::ConstantIndexOp>(loc, 16);
+
+    // Vectorized main body: [0, floor(upperBound / VL) * VL) with step VL.
+    Value vecIters = rewriter.create<arith::DivUIOp>(loc, upperBound, cVec);
+    Value vecUpper = rewriter.create<arith::MulIOp>(loc, vecIters, cVec);
+    auto vecType = VectorType::get({16}, srcType.getElementType());
+    auto vecLoop = rewriter.create<scf::ForOp>(loc, c0, vecUpper, cVec);
+    rewriter.setInsertionPointToStart(vecLoop.getBody());
+    Value ivVec = vecLoop.getInductionVar();
+    Value vec =
+        rewriter.create<vector::LoadOp>(loc, vecType, srcSubview, ValueRange{ivVec});
+    rewriter.create<vector::StoreOp>(loc, vec, dstSubview, ValueRange{ivVec});
+
+    // Scalar tail: [vecUpper, upperBound).
+    rewriter.setInsertionPointAfter(vecLoop);
+    auto tailLoop = rewriter.create<scf::ForOp>(loc, vecUpper, upperBound, c1);
+    rewriter.setInsertionPointToStart(tailLoop.getBody());
+    Value iv = tailLoop.getInductionVar();
+    Value v = rewriter.create<memref::LoadOp>(loc, srcSubview, ValueRange{iv});
+    rewriter.create<memref::StoreOp>(loc, v, dstSubview, ValueRange{iv});
+    return;
+  }
+
+  // Conservative fallback when we cannot build a fixed-size vector load/store.
   auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   auto loop = rewriter.create<scf::ForOp>(loc, c0, upperBound, c1);
@@ -151,6 +184,42 @@ static void emit1DTensorToMemrefStoreLoop(Location loc, Value srcTensor,
                                           Value dstSubview, Value upperBound,
                                           ConversionPatternRewriter &rewriter) {
   OpBuilder::InsertionGuard guard(rewriter);
+  auto srcType = dyn_cast<RankedTensorType>(srcTensor.getType());
+  auto dstType = dyn_cast<MemRefType>(dstSubview.getType());
+  if (srcType && dstType && srcType.getRank() == 1 && dstType.getRank() == 1 &&
+      hasUnitStride1DLayout(dstType)) {
+    auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto cVec = rewriter.create<arith::ConstantIndexOp>(loc, 16);
+
+    // Vectorized main body: [0, floor(upperBound / VL) * VL) with step VL.
+    Value vecIters = rewriter.create<arith::DivUIOp>(loc, upperBound, cVec);
+    Value vecUpper = rewriter.create<arith::MulIOp>(loc, vecIters, cVec);
+    auto elemType = srcType.getElementType();
+    auto vecType = VectorType::get({16}, elemType);
+    auto vecLoop = rewriter.create<scf::ForOp>(loc, c0, vecUpper, cVec);
+    rewriter.setInsertionPointToStart(vecLoop.getBody());
+    Value ivVec = vecLoop.getInductionVar();
+    Value padding = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getZeroAttr(elemType));
+    auto identityMap = AffineMap::getMinorIdentityMap(
+        /*numDims=*/1, /*numResults=*/1, rewriter.getContext());
+    SmallVector<bool> inBounds = {true};
+    Value vec = rewriter.create<vector::TransferReadOp>(
+        loc, vecType, srcTensor, ValueRange{ivVec}, identityMap, padding,
+        inBounds);
+    rewriter.create<vector::StoreOp>(loc, vec, dstSubview, ValueRange{ivVec});
+
+    // Scalar tail: [vecUpper, upperBound).
+    rewriter.setInsertionPointAfter(vecLoop);
+    auto tailLoop = rewriter.create<scf::ForOp>(loc, vecUpper, upperBound, c1);
+    rewriter.setInsertionPointToStart(tailLoop.getBody());
+    Value iv = tailLoop.getInductionVar();
+    Value v = rewriter.create<tensor::ExtractOp>(loc, srcTensor, ValueRange{iv});
+    rewriter.create<memref::StoreOp>(loc, v, dstSubview, ValueRange{iv});
+    return;
+  }
+
   auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   auto loop = rewriter.create<scf::ForOp>(loc, c0, upperBound, c1);
