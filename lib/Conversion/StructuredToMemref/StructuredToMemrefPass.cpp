@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
 #define DEBUG_TYPE "structured-to-memref"
@@ -74,7 +75,8 @@ public:
                 math::MathDialect, linalg::LinalgDialect, affine::AffineDialect,
                 scf::SCFDialect, tensor::TensorDialect,
                 bufferization::BufferizationDialect, triton::TritonDialect,
-                ttx::TritonTilingExtDialect, memref::MemRefDialect>();
+                ttx::TritonTilingExtDialect, memref::MemRefDialect,
+                vector::VectorDialect>();
   }
 
   void runOnOperation() override {
@@ -88,7 +90,7 @@ public:
         linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
         cf::ControlFlowDialect, tensor::TensorDialect,
         bufferization::BufferizationDialect, ttx::TritonTilingExtDialect,
-        memref::MemRefDialect>();
+        memref::MemRefDialect, vector::VectorDialect>();
 
     target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp>();
 
