@@ -141,6 +141,7 @@ static void emit1DMemrefToMemrefCopyLoop(Location loc, Value srcSubview,
                                          Value dstSubview, Value upperBound,
                                          ConversionPatternRewriter &rewriter) {
   OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.getContext()->loadDialect<vector::VectorDialect>();
   auto srcType = dyn_cast<MemRefType>(srcSubview.getType());
   auto dstType = dyn_cast<MemRefType>(dstSubview.getType());
 
@@ -185,6 +186,7 @@ static void emit1DTensorToMemrefStoreLoop(Location loc, Value srcTensor,
                                           Value dstSubview, Value upperBound,
                                           ConversionPatternRewriter &rewriter) {
   OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.getContext()->loadDialect<vector::VectorDialect>();
   auto srcType = dyn_cast<RankedTensorType>(srcTensor.getType());
   auto dstType = dyn_cast<MemRefType>(dstSubview.getType());
   if (srcType && dstType && srcType.getRank() == 1 && dstType.getRank() == 1 &&
