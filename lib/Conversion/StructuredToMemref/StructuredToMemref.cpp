@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <optional>
 
 #define DEBUG_TYPE "structured-to-memref"
 
@@ -204,10 +205,11 @@ static void emit1DTensorToMemrefStoreLoop(Location loc, Value srcTensor,
         loc, rewriter.getZeroAttr(elemType));
     auto identityMap = AffineMap::getMinorIdentityMap(
         /*numDims=*/1, /*numResults=*/1, rewriter.getContext());
-    SmallVector<bool> inBounds = {true};
+    const bool inBoundsArr[] = {true};
     Value vec = rewriter.create<vector::TransferReadOp>(
-        loc, vecType, srcTensor, ValueRange{ivVec}, identityMap, padding,
-        inBounds);
+        loc, vecType, srcTensor, ValueRange{ivVec},
+        std::optional<Value>(padding), identityMap,
+        std::optional<ArrayRef<bool>>(ArrayRef<bool>(inBoundsArr)));
     rewriter.create<vector::StoreOp>(loc, vec, dstSubview, ValueRange{ivVec});
 
     // Scalar tail: [vecUpper, upperBound).
