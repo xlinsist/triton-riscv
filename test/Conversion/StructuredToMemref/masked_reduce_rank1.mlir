@@ -91,7 +91,7 @@ module {
     %5 = tt.broadcast %4 : tensor<1x8xi32> -> tensor<4x8xi32>
     %6 = tt.splat %cols : i32 -> tensor<4x8xi32>
     %7 = arith.cmpi slt, %5, %6 : tensor<4x8xi32>
-    %8 = arith.muli %2, %cols : tensor<4x8xi32>
+    %8 = arith.muli %2, %6 : tensor<4x8xi32>
     %9 = arith.addi %8, %5 : tensor<4x8xi32>
     %10 = tt.splat %in : !tt.ptr<f32> -> tensor<4x8x!tt.ptr<f32>>
     %11 = tt.addptr %10, %9 : tensor<4x8x!tt.ptr<f32>>, tensor<4x8xi32>
