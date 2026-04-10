@@ -35,6 +35,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
@@ -465,7 +466,7 @@ static Operation *getSingleReduceBodyOp(linalg::ReduceOp op) {
   if (!llvm::hasSingleElement(bodyOps)) {
     return nullptr;
   }
-  return &bodyOps.front();
+  return &*bodyOps.begin();
 }
 
 static std::optional<MaskedReduceKind>
@@ -474,20 +475,25 @@ matchMaskedReduceKind(linalg::ReduceOp op) {
   if (!bodyOp) {
     return std::nullopt;
   }
-  return llvm::TypeSwitch<Operation *, std::optional<MaskedReduceKind>>(bodyOp)
-      .Case<arith::AddFOp>(
-          [](auto) { return std::optional(MaskedReduceKind::AddF); })
-      .Case<arith::AddIOp>(
-          [](auto) { return std::optional(MaskedReduceKind::AddI); })
-      .Case<arith::MaximumFOp>(
-          [](auto) { return std::optional(MaskedReduceKind::MaximumF); })
-      .Case<arith::MaxNumFOp>(
-          [](auto) { return std::optional(MaskedReduceKind::MaxNumF); })
-      .Case<arith::MaxSIOp>(
-          [](auto) { return std::optional(MaskedReduceKind::MaxSI); })
-      .Case<arith::MaxUIOp>(
-          [](auto) { return std::optional(MaskedReduceKind::MaxUI); })
-      .Default([](Operation *) { return std::nullopt; });
+  if (isa<arith::AddFOp>(bodyOp)) {
+    return MaskedReduceKind::AddF;
+  }
+  if (isa<arith::AddIOp>(bodyOp)) {
+    return MaskedReduceKind::AddI;
+  }
+  if (isa<arith::MaximumFOp>(bodyOp)) {
+    return MaskedReduceKind::MaximumF;
+  }
+  if (isa<arith::MaxNumFOp>(bodyOp)) {
+    return MaskedReduceKind::MaxNumF;
+  }
+  if (isa<arith::MaxSIOp>(bodyOp)) {
+    return MaskedReduceKind::MaxSI;
+  }
+  if (isa<arith::MaxUIOp>(bodyOp)) {
+    return MaskedReduceKind::MaxUI;
+  }
+  return std::nullopt;
 }
 
 static Value createMaskedReduceInit(Location loc, MaskedReduceKind kind,
