@@ -89,21 +89,23 @@ module {
     %3 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
     %4 = tt.expand_dims %3 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32>
     %5 = tt.broadcast %4 : tensor<1x8xi32> -> tensor<4x8xi32>
+    %c8 = arith.constant 8 : i32
     %6 = tt.splat %cols : i32 -> tensor<4x8xi32>
     %7 = arith.cmpi slt, %5, %6 : tensor<4x8xi32>
-    %8 = arith.muli %2, %6 : tensor<4x8xi32>
-    %9 = arith.addi %8, %5 : tensor<4x8xi32>
-    %10 = tt.splat %in : !tt.ptr<f32> -> tensor<4x8x!tt.ptr<f32>>
-    %11 = tt.addptr %10, %9 : tensor<4x8x!tt.ptr<f32>>, tensor<4x8xi32>
-    %12 = tt.splat %cst : f32 -> tensor<4x8xf32>
-    %13 = tt.load %11, %7, %12 : tensor<4x8x!tt.ptr<f32>>
-    %14 = "tt.reduce"(%13) ({
+    %8 = tt.splat %c8 : i32 -> tensor<4x8xi32>
+    %9 = arith.muli %2, %8 : tensor<4x8xi32>
+    %10 = arith.addi %9, %5 : tensor<4x8xi32>
+    %11 = tt.splat %in : !tt.ptr<f32> -> tensor<4x8x!tt.ptr<f32>>
+    %12 = tt.addptr %11, %10 : tensor<4x8x!tt.ptr<f32>>, tensor<4x8xi32>
+    %13 = tt.splat %cst : f32 -> tensor<4x8xf32>
+    %14 = tt.load %12, %7, %13 : tensor<4x8x!tt.ptr<f32>>
+    %15 = "tt.reduce"(%14) ({
     ^bb0(%arg0: f32, %arg1: f32):
-      %15 = arith.addf %arg0, %arg1 : f32
-      tt.reduce.return %15 : f32
+      %16 = arith.addf %arg0, %arg1 : f32
+      tt.reduce.return %16 : f32
     }) {axis = 1 : i32} : (tensor<4x8xf32>) -> tensor<4xf32>
     %16 = tt.splat %out : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
-    tt.store %16, %14 : tensor<4x!tt.ptr<f32>>
+    tt.store %16, %15 : tensor<4x!tt.ptr<f32>>
     tt.return
   }
 }
