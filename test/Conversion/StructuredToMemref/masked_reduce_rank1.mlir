@@ -111,5 +111,6 @@ module {
 }
 
 // CHECK-LABEL: func.func @masked_sum_rank2_fallback
-// CHECK: memref.alloc() : memref<4x8xf32>
-// CHECK: bufferization.to_tensor
+// CHECK: %cast = memref.cast
+// CHECK: bufferization.to_tensor %cast restrict
+// CHECK: scf.if
