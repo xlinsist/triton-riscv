@@ -18,6 +18,9 @@ void populateStructuredToMemrefConversionPatterns(RewritePatternSet &patterns,
                                                   bool enableTensorFirstVectorCpu =
                                                       false);
 
+void populateStructuredToMemrefPreConversionPatterns(
+    RewritePatternSet &patterns, bool enableTensorFirstVectorCpu = false);
+
 std::unique_ptr<OperationPass<ModuleOp>>
 createStructuredToMemrefPass(bool enableTensorFirstVectorCpu = false);
 

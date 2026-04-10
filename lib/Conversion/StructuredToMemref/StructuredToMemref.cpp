@@ -103,9 +103,9 @@ static memref::SubViewOp createFullSubview1D(Location loc, Value source,
                                      offsets, sizes, strides);
 }
 
-static FailureOr<Value>
-ensureRankedMemRef(Value source, int64_t rank, Type elementType, Location loc,
-                   ConversionPatternRewriter &rewriter) {
+static FailureOr<Value> ensureRankedMemRef(Value source, int64_t rank,
+                                           Type elementType, Location loc,
+                                           OpBuilder &rewriter) {
   if (isa<MemRefType>(source.getType())) {
     return source;
   }
@@ -345,9 +345,9 @@ static OpFoldResult accumulateTargetOffset(Location loc,
   return targetOffset;
 }
 
-static FailureOr<Value>
-materializeStructuredTPtrMemRef(tts::MakeTensorPtrOp op, Location loc,
-                                ConversionPatternRewriter &rewriter) {
+static FailureOr<Value> materializeStructuredTPtrMemRef(tts::MakeTensorPtrOp op,
+                                                        Location loc,
+                                                        OpBuilder &rewriter) {
   if (!op.isStructuredPtr()) {
     return failure();
   }
@@ -449,6 +449,270 @@ static void fillWithValue(Location loc, Value alloc, Value other,
 }
 
 namespace {
+
+enum class MaskedReduceKind {
+  AddF,
+  AddI,
+  MaximumF,
+  MaxNumF,
+  MaxSI,
+  MaxUI,
+};
+
+static Operation *getSingleReduceBodyOp(linalg::ReduceOp op) {
+  Block &block = op->getRegion(0).front();
+  auto bodyOps = block.without_terminator();
+  if (!llvm::hasSingleElement(bodyOps)) {
+    return nullptr;
+  }
+  return &bodyOps.front();
+}
+
+static std::optional<MaskedReduceKind>
+matchMaskedReduceKind(linalg::ReduceOp op) {
+  Operation *bodyOp = getSingleReduceBodyOp(op);
+  if (!bodyOp) {
+    return std::nullopt;
+  }
+  return llvm::TypeSwitch<Operation *, std::optional<MaskedReduceKind>>(bodyOp)
+      .Case<arith::AddFOp>(
+          [](auto) { return std::optional(MaskedReduceKind::AddF); })
+      .Case<arith::AddIOp>(
+          [](auto) { return std::optional(MaskedReduceKind::AddI); })
+      .Case<arith::MaximumFOp>(
+          [](auto) { return std::optional(MaskedReduceKind::MaximumF); })
+      .Case<arith::MaxNumFOp>(
+          [](auto) { return std::optional(MaskedReduceKind::MaxNumF); })
+      .Case<arith::MaxSIOp>(
+          [](auto) { return std::optional(MaskedReduceKind::MaxSI); })
+      .Case<arith::MaxUIOp>(
+          [](auto) { return std::optional(MaskedReduceKind::MaxUI); })
+      .Default([](Operation *) { return std::nullopt; });
+}
+
+static Value createMaskedReduceInit(Location loc, MaskedReduceKind kind,
+                                    Type resultType,
+                                    PatternRewriter &rewriter) {
+  switch (kind) {
+  case MaskedReduceKind::AddF:
+    return rewriter
+        .create<arith::ConstantOp>(loc, resultType,
+                                   rewriter.getFloatAttr(resultType, 0.0))
+        .getResult();
+  case MaskedReduceKind::AddI:
+  case MaskedReduceKind::MaxUI:
+    return rewriter
+        .create<arith::ConstantOp>(loc, resultType,
+                                   rewriter.getIntegerAttr(resultType, 0))
+        .getResult();
+  case MaskedReduceKind::MaximumF:
+  case MaskedReduceKind::MaxNumF:
+    return rewriter
+        .create<arith::ConstantOp>(
+            loc, resultType,
+            rewriter.getFloatAttr(
+                resultType, -std::numeric_limits<float>::infinity()))
+        .getResult();
+  case MaskedReduceKind::MaxSI:
+    return rewriter
+        .create<arith::ConstantOp>(
+            loc, resultType,
+            rewriter.getIntegerAttr(resultType,
+                                    llvm::minIntN(resultType.getIntOrFloatBitWidth())))
+        .getResult();
+  }
+  llvm_unreachable("unsupported masked reduce kind");
+}
+
+static Value castMaskedReduceInput(Location loc, Value value, Type resultType,
+                                   MaskedReduceKind kind,
+                                   PatternRewriter &rewriter) {
+  if (value.getType() == resultType) {
+    return value;
+  }
+  if (kind == MaskedReduceKind::AddF && isa<FloatType>(value.getType()) &&
+      isa<FloatType>(resultType)) {
+    return rewriter.create<arith::ExtFOp>(loc, resultType, value);
+  }
+  llvm_unreachable("unexpected masked reduce type mismatch");
+}
+
+static Value combineMaskedReduceValue(Location loc, MaskedReduceKind kind,
+                                      Value input, Value acc, Type resultType,
+                                      PatternRewriter &rewriter) {
+  input = castMaskedReduceInput(loc, input, resultType, kind, rewriter);
+  switch (kind) {
+  case MaskedReduceKind::AddF:
+    return rewriter.create<arith::AddFOp>(loc, input, acc).getResult();
+  case MaskedReduceKind::AddI:
+    return rewriter.create<arith::AddIOp>(loc, input, acc).getResult();
+  case MaskedReduceKind::MaximumF:
+    return rewriter.create<arith::MaximumFOp>(loc, input, acc).getResult();
+  case MaskedReduceKind::MaxNumF:
+    return rewriter.create<arith::MaxNumFOp>(loc, input, acc).getResult();
+  case MaskedReduceKind::MaxSI:
+    return rewriter.create<arith::MaxSIOp>(loc, input, acc).getResult();
+  case MaskedReduceKind::MaxUI:
+    return rewriter.create<arith::MaxUIOp>(loc, input, acc).getResult();
+  }
+  llvm_unreachable("unsupported masked reduce kind");
+}
+
+static Value combineMaskedReduceValue(Location loc, MaskedReduceKind kind,
+                                      Value input, Value acc,
+                                      PatternRewriter &rewriter) {
+  return combineMaskedReduceValue(loc, kind, input, acc, acc.getType(),
+                                  rewriter);
+}
+
+static std::optional<vector::CombiningKind>
+getMaskedReduceCombiningKind(MaskedReduceKind kind) {
+  switch (kind) {
+  case MaskedReduceKind::AddF:
+  case MaskedReduceKind::AddI:
+    return vector::CombiningKind::ADD;
+  case MaskedReduceKind::MaximumF:
+    return vector::CombiningKind::MAXIMUMF;
+  case MaskedReduceKind::MaxNumF:
+    return vector::CombiningKind::MAXNUMF;
+  case MaskedReduceKind::MaxSI:
+    return vector::CombiningKind::MAXSI;
+  case MaskedReduceKind::MaxUI:
+    return vector::CombiningKind::MAXUI;
+  }
+  return std::nullopt;
+}
+
+struct MaskedReduceFusionPattern : public OpRewritePattern<linalg::ReduceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::ReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInputs().size() != 1 || op.getInits().size() != 1 ||
+        op->getNumResults() != 1) {
+      return failure();
+    }
+    if (op.getDimensions().size() != 1 || op.getDimensions()[0] != 0) {
+      return failure();
+    }
+
+    auto kind = matchMaskedReduceKind(op);
+    if (!kind) {
+      return failure();
+    }
+
+    auto load = op.getInputs()[0].getDefiningOp<tts::LoadOp>();
+    if (!load || !load.hasMask() || !load.getOther() || !load->hasOneUse()) {
+      return failure();
+    }
+
+    auto loadType = dyn_cast<RankedTensorType>(load.getType());
+    if (!loadType || loadType.getRank() != 1 || !loadType.hasStaticShape()) {
+      return failure();
+    }
+
+    if (!op->getResult(0).hasOneUse()) {
+      return failure();
+    }
+    auto extract =
+        dyn_cast<tensor::ExtractOp>(*op->getResult(0).user_begin());
+    if (!extract || !extract.getIndices().empty()) {
+      return failure();
+    }
+
+    auto ptr = load.getPtr();
+    auto makeTPtr = ptr.getDefiningOp<tts::MakeTensorPtrOp>();
+    if (!isa<MemRefType, UnrankedMemRefType>(ptr.getType())) {
+      if (!makeTPtr) {
+        return failure();
+      }
+      auto materialized =
+          materializeStructuredTPtrMemRef(makeTPtr, load.getLoc(), rewriter);
+      if (failed(materialized)) {
+        return failure();
+      }
+      ptr = *materialized;
+    }
+
+    auto rankedPtr =
+        ensureRankedMemRef(ptr, /*rank=*/1, loadType.getElementType(),
+                           load.getLoc(), rewriter);
+    if (failed(rankedPtr)) {
+      return failure();
+    }
+    ptr = *rankedPtr;
+
+    auto memrefType = dyn_cast<MemRefType>(ptr.getType());
+    if (!memrefType || memrefType.getRank() != 1 ||
+        !hasUnitStride1DLayout(memrefType)) {
+      return failure();
+    }
+
+    auto vectorKind = getMaskedReduceCombiningKind(*kind);
+    if (!vectorKind) {
+      return failure();
+    }
+
+    Location loc = op.getLoc();
+    Type resultType = extract.getType();
+    Value accInit = createMaskedReduceInit(loc, *kind, resultType, rewriter);
+    Value validLen =
+        ofrToIndexValue(load.getMixedMaskDims()[0], loc, rewriter);
+    Value other = load.getOther();
+    int64_t fullSize = loadType.getShape()[0];
+
+    auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto c16 = rewriter.create<arith::ConstantIndexOp>(loc, 16);
+    auto cFull = rewriter.create<arith::ConstantIndexOp>(loc, fullSize);
+
+    Value vecIters = rewriter.create<arith::DivUIOp>(loc, validLen, c16);
+    Value vecUpper = rewriter.create<arith::MulIOp>(loc, vecIters, c16);
+    auto vecType = VectorType::get({16}, loadType.getElementType());
+
+    auto vecLoop =
+        rewriter.create<scf::ForOp>(loc, c0, vecUpper, c16, ValueRange{accInit});
+    rewriter.setInsertionPointToStart(vecLoop.getBody());
+    Value ivVec = vecLoop.getInductionVar();
+    Value accVec = vecLoop.getRegionIterArgs().front();
+    Value vec = rewriter.create<vector::LoadOp>(loc, vecType, ptr,
+                                                ValueRange{ivVec});
+    Value vecReduced = rewriter.create<vector::ReductionOp>(
+        loc, *vectorKind, vec, accVec);
+    rewriter.create<scf::YieldOp>(loc, vecReduced);
+
+    rewriter.setInsertionPointAfter(vecLoop);
+    auto scalarLoop = rewriter.create<scf::ForOp>(
+        loc, vecUpper, validLen, c1, ValueRange{vecLoop.getResult(0)});
+    rewriter.setInsertionPointToStart(scalarLoop.getBody());
+    Value iv = scalarLoop.getInductionVar();
+    Value accScalar = scalarLoop.getRegionIterArgs().front();
+    Value elem =
+        rewriter.create<memref::LoadOp>(loc, ptr, ValueRange{iv});
+    Value next = combineMaskedReduceValue(loc, *kind, elem, accScalar,
+                                          resultType, rewriter);
+    rewriter.create<scf::YieldOp>(loc, next);
+
+    rewriter.setInsertionPointAfter(scalarLoop);
+    auto paddingLoop = rewriter.create<scf::ForOp>(
+        loc, validLen, cFull, c1, ValueRange{scalarLoop.getResult(0)});
+    rewriter.setInsertionPointToStart(paddingLoop.getBody());
+    Value accPadding = paddingLoop.getRegionIterArgs().front();
+    Value nextPadding = combineMaskedReduceValue(loc, *kind, other, accPadding,
+                                                 resultType, rewriter);
+    rewriter.create<scf::YieldOp>(loc, nextPadding);
+
+    rewriter.replaceOp(extract, paddingLoop.getResult(0));
+    rewriter.eraseOp(op);
+    if (load->use_empty()) {
+      rewriter.eraseOp(load);
+    }
+    if (makeTPtr && makeTPtr->use_empty()) {
+      rewriter.eraseOp(makeTPtr);
+    }
+    return success();
+  }
+};
 
 struct MakeTensorPtrConverter
     : public OpConversionPattern<tts::MakeTensorPtrOp> {
@@ -1635,6 +1899,15 @@ public:
 };
 
 } // namespace
+
+void mlir::triton::populateStructuredToMemrefPreConversionPatterns(
+    RewritePatternSet &patterns, bool enableTensorFirstVectorCpu) {
+  if (!enableTensorFirstVectorCpu) {
+    return;
+  }
+  patterns.add<MaskedReduceFusionPattern>(patterns.getContext(),
+                                          PatternBenefit(10));
+}
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter,

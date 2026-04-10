@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
 #define DEBUG_TYPE "structured-to-memref"
@@ -81,6 +82,14 @@ public:
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
+
+    RewritePatternSet prePatterns(&getContext());
+    triton::populateStructuredToMemrefPreConversionPatterns(
+        prePatterns, enableTensorFirstVectorCpu);
+    if (failed(applyPatternsGreedily(moduleOp, std::move(prePatterns)))) {
+      signalPassFailure();
+      return;
+    }
 
     RewritePatternSet patterns(&getContext());
     ConversionTarget target(getContext());
