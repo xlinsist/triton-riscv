@@ -25,6 +25,19 @@ RISCV_EXTRA_ENV = {
     "TRITON_RISCV_STRUCTURED_LDST_MODE": "tensor_first_vector_cpu",
 }
 
+PASSTHROUGH_ENV_KEYS = (
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LD_LIBRARY_PATH",
+    "PATH",
+    "TMPDIR",
+    "TRITON_SHARED_OPT_PATH",
+    "LLVM_BINARY_DIR",
+    "BUDDY_MLIR_BINARY_DIR",
+    "USER",
+)
+
 
 @dataclass(frozen=True)
 class RepoSpec:
@@ -157,6 +170,7 @@ def run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None =
         text=True,
         capture_output=True,
         check=True,
+        timeout=args.timeout,
     )
 
 
@@ -169,8 +183,17 @@ def record_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def make_child_env() -> dict[str, str]:
+    env = {}
+    for key in PASSTHROUGH_ENV_KEYS:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
 def build_env(repo: RepoSpec, out_dir: Path, op: OpSpec, extra_env: dict[str, str]) -> dict[str, str]:
-    env = os.environ.copy()
+    env = make_child_env()
     env.update(THREAD_ENV)
     env.update(extra_env)
     env["REPO_ROOT"] = str(repo.root)
@@ -252,11 +275,15 @@ parser.add_argument(
 )
 parser.add_argument("--warmup", type=int, default=5)
 parser.add_argument("--repeats", type=int, default=20)
+parser.add_argument("--timeout", type=int, default=1800, help="Per-subprocess timeout in seconds.")
 args = parser.parse_args()
 
 repo_root = Path(__file__).resolve().parents[1]
+output_root = Path(args.output_root)
+if output_root.is_absolute() or ".." in output_root.parts:
+    raise SystemExit("--output-root must be a relative path under the repo root")
 timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-out_dir = repo_root / args.output_root / timestamp
+out_dir = repo_root / output_root / timestamp
 out_dir.mkdir(parents=True, exist_ok=False)
 
 riscv_repo = RepoSpec(
