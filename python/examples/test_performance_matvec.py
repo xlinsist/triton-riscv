@@ -17,7 +17,7 @@ def _select_cpu_backend_compat():
 
 
 @triton.jit
-def matvec_kernel(
+def matvec_kernel_aligned(
     w_ptr,
     x_ptr,
     out_ptr,
@@ -33,14 +33,46 @@ def matvec_kernel(
 
     # Split full tiles from the tail so full-width loads avoid masked staging.
     for block in range(0, full_blocks):
-        offs = block * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-        w = tl.load(row_ptr + offs).to(tl.float32)
-        x = tl.load(x_ptr + offs).to(tl.float32)
+        block_start = block * BLOCK_SIZE_N
+        w_block_ptr = tl.make_block_ptr(
+            base=row_ptr,
+            shape=(N,),
+            strides=(1,),
+            offsets=(block_start,),
+            block_shape=(BLOCK_SIZE_N,),
+            order=(0,),
+        )
+        x_block_ptr = tl.make_block_ptr(
+            base=x_ptr,
+            shape=(N,),
+            strides=(1,),
+            offsets=(block_start,),
+            block_shape=(BLOCK_SIZE_N,),
+            order=(0,),
+        )
+        w = tl.load(w_block_ptr).to(tl.float32)
+        x = tl.load(x_block_ptr).to(tl.float32)
         acc += tl.sum(w * x, axis=0)
 
-    tail_start = full_blocks * BLOCK_SIZE_N
-    if tail_start < N:
-        offs = tail_start + tl.arange(0, BLOCK_SIZE_N)
+    tl.store(out_ptr + row, acc)
+
+
+@triton.jit
+def matvec_kernel_generic(
+    w_ptr,
+    x_ptr,
+    out_ptr,
+    M,
+    N,
+    stride_wm,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    row = tl.program_id(axis=0)
+    row_ptr = w_ptr + row * stride_wm
+    acc = 0.0
+
+    for n in range(0, N, BLOCK_SIZE_N):
+        offs = n + tl.arange(0, BLOCK_SIZE_N)
         mask = offs < N
         w = tl.load(row_ptr + offs, mask=mask, other=0.0).to(tl.float32)
         x = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)
@@ -59,7 +91,8 @@ def matvec(weight: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     m, n = weight.shape
     out = torch.empty((m,), device=weight.device, dtype=torch.float32)
     block_size_n = min(triton.next_power_of_2(n), 1024)
-    matvec_kernel[(m,)](weight, vec, out, m, n, weight.stride(0), BLOCK_SIZE_N=block_size_n)
+    kernel = matvec_kernel_aligned if n % block_size_n == 0 else matvec_kernel_generic
+    kernel[(m,)](weight, vec, out, m, n, weight.stride(0), BLOCK_SIZE_N=block_size_n)
     return out
 
 
