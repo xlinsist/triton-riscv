@@ -29,9 +29,18 @@ def matvec_kernel(
     row = tl.program_id(axis=0)
     row_ptr = w_ptr + row * stride_wm
     acc = 0.0
+    full_blocks = N // BLOCK_SIZE_N
 
-    for n in range(0, N, BLOCK_SIZE_N):
-        offs = n + tl.arange(0, BLOCK_SIZE_N)
+    # Split full tiles from the tail so full-width loads avoid masked staging.
+    for block in range(0, full_blocks):
+        offs = block * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        w = tl.load(row_ptr + offs).to(tl.float32)
+        x = tl.load(x_ptr + offs).to(tl.float32)
+        acc += tl.sum(w * x, axis=0)
+
+    tail_start = full_blocks * BLOCK_SIZE_N
+    if tail_start < N:
+        offs = tail_start + tl.arange(0, BLOCK_SIZE_N)
         mask = offs < N
         w = tl.load(row_ptr + offs, mask=mask, other=0.0).to(tl.float32)
         x = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)
