@@ -1604,26 +1604,48 @@ LogicalResult PtrAnalysis::rewriteForOp(scf::ForOp op) {
 LogicalResult
 PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   auto tritonValue = op->getOperand(0);
+  Value remappedValue =
+      ptrMap.contains(tritonValue) ? ptrMap.lookup(tritonValue) : tritonValue;
 
-  // If this triton value isn't known, it means PtrAnalysis has failed to
-  // analyze this pointer. In such cases, simply remap all uses of the
-  // structured value back to its original triton value.
+  auto buildFallbackReplacements = [&]() {
+    SmallVector<Value> replacements{remappedValue};
+    OpBuilder builder(op);
+    for (Type offsetType : op.getOffsets().getTypes()) {
+      replacements.push_back(
+          builder.create<arith::ConstantIndexOp>(op.getLoc(), 0));
+    }
+    for (Type strideType : op.getStrides().getTypes()) {
+      replacements.push_back(
+          builder.create<arith::ConstantIndexOp>(op.getLoc(), 1));
+    }
+    return replacements;
+  };
+
+  if (!knownPtrs.contains(tritonValue)) {
+    PtrState state;
+    OpBuilder builder(op);
+    if (succeeded(visitOperand(tritonValue, state, op.getLoc(), builder))) {
+      knownPtrs[tritonValue] = state;
+    }
+  }
+
   if (!knownPtrs.contains(tritonValue)) {
     LLVM_DEBUG(op.emitRemark(
         "Rewrite GetStructuredStateOp failed. Could not find PtrState."));
-    op.getResult(0).replaceAllUsesWith(tritonValue);
-    return failure();
+    op.replaceAllUsesWith(buildFallbackReplacements());
+    op.erase();
+    return success();
   }
 
   tts::PtrState state = knownPtrs[tritonValue];
   if (!state.isStructured()) {
     LLVM_DEBUG(op.emitRemark(
-        "Rewrite GetStructuredStateOp failed. PtrState is not structured."));
-    op.getResult(0).replaceAllUsesWith(tritonValue);
-    return failure();
+        "Rewrite GetStructuredStateOp could not represent non-structured "
+        "state as scalar offsets/strides; using neutral placeholders."));
+    op.replaceAllUsesWith(buildFallbackReplacements());
+    op.erase();
+    return success();
   }
-  Value remappedValue =
-      ptrMap.contains(tritonValue) ? ptrMap.lookup(tritonValue) : tritonValue;
 
   SmallVector<Value> replacements{remappedValue};
   OpBuilder builder(op);
@@ -1936,9 +1958,9 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
               if (!knownPtrs.contains(tritonValue)) {
                 PtrState state;
                 OpBuilder b(getStateOp);
-                if (succeeded(visitOperand(tritonValue, state,
-                                           getStateOp->getLoc(), b)) &&
-                    state.isStructured()) {
+                if (succeeded(
+                        visitOperand(tritonValue, state, getStateOp->getLoc(),
+                                     b))) {
                   knownPtrs[tritonValue] = state;
                 } else {
                   LLVM_DEBUG(getStateOp->emitRemark(

@@ -43,12 +43,21 @@ namespace triton {
 
 namespace {
 
+static Type getMemRefElementTypeForPointer(triton::PointerType ptrType) {
+  Type pointeeType = ptrType.getPointeeType();
+  if (auto shapedType = dyn_cast<ShapedType>(pointeeType)) {
+    return shapedType.getElementType();
+  }
+  return pointeeType;
+}
+
 class PtrToUnrankedMemrefConverter : public TypeConverter {
 public:
   PtrToUnrankedMemrefConverter() {
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
-      return UnrankedMemRefType::get(ptrType.getPointeeType(), 0);
+      return UnrankedMemRefType::get(getMemRefElementTypeForPointer(ptrType),
+                                     0);
     });
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,

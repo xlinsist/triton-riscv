@@ -31,13 +31,22 @@ using namespace triton;
 
 namespace {
 
+static Type getMemRefElementTypeForPointer(triton::PointerType ptrType) {
+  Type pointeeType = ptrType.getPointeeType();
+  if (auto shapedType = dyn_cast<ShapedType>(pointeeType)) {
+    return shapedType.getElementType();
+  }
+  return pointeeType;
+}
+
 class TritonTypeConverter : public TypeConverter {
 public:
   TritonTypeConverter() {
     // The order of type conversion is important: later ones are tried earlier.
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
-      return UnrankedMemRefType::get(ptrType.getPointeeType(), 0);
+      return UnrankedMemRefType::get(getMemRefElementTypeForPointer(ptrType),
+                                     0);
     });
     addConversion([](TensorType tensorType) -> Type {
       auto elemType = tensorType.getElementType();

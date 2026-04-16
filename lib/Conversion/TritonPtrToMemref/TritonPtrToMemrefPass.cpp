@@ -42,13 +42,21 @@ using namespace triton;
 
 namespace {
 
+static Type getMemRefElementTypeForPointer(triton::PointerType ptrType) {
+  Type pointeeType = ptrType.getPointeeType();
+  if (auto shapedType = dyn_cast<ShapedType>(pointeeType)) {
+    return shapedType.getElementType();
+  }
+  return pointeeType;
+}
+
 class TritonFunctionSignatureConverter : public TypeConverter {
 public:
   TritonFunctionSignatureConverter() {
     // The order of type conversion is important: later ones are tried earlier.
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
-      return UnrankedMemRefType::get(ptrType.getPointeeType(),
+      return UnrankedMemRefType::get(getMemRefElementTypeForPointer(ptrType),
                                      /*memorySpace=*/0);
     });
     addConversion([](RankedTensorType tensorType) -> std::optional<Type> {
