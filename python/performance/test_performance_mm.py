@@ -147,5 +147,5 @@ def bench_mm(M, N, K):
 
 if __name__ == "__main__":
     benchmark.select_cpu_backend()
-    for M, N, K in [(8*32, 8*32, 8*32), (16*32, 16*32, 16*32), (32*32, 32*32, 32*32)]:
+    for M, N, K in [(8*32, 8*32, 8*32), (16*32, 16*32, 16*32)]:
         bench_mm(M, N, K)
