@@ -41,8 +41,8 @@ The script is idempotent: re-running it on an already-patched tree prints `SKIPP
 ### Create a virtual environment
 
 ```sh
-python -m venv "${TRITON_RISCV_DIR}/.venv" --prompt triton-riscv
-source "${TRITON_RISCV_DIR}/.venv/bin/activate"
+python -m venv "${TRITON_DIR}/.venv" --prompt triton-riscv
+source "${TRITON_DIR}/.venv/bin/activate"
 ```
 
 ### Install dependencies
@@ -65,7 +65,7 @@ By default it assumes:
 
 - `TRITON_RISCV_DIR=/path/to/triton-riscv`
 - `TRITON_DIR=$TRITON_RISCV_DIR/../triton`
-- `TRITON_VENV=$TRITON_RISCV_DIR/.venv`
+- `TRITON_VENV=$TRITON_DIR/.venv` when that virtualenv exists, otherwise `$TRITON_RISCV_DIR/.venv`
 - `BUDDY_DIR=$TRITON_RISCV_DIR/../buddy-mlir`
 - `BUILD_DIR` is auto-detected from `$TRITON_DIR/build/cmake.linux-*-cpython-*`
 

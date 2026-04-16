@@ -11,7 +11,13 @@ _triton_riscv_repo_root="$(cd "${_triton_riscv_env_dir}/.." && pwd)"
 TRITON_RISCV_DIR="${TRITON_RISCV_DIR:-${_triton_riscv_repo_root}}"
 TRITON_DIR="${TRITON_DIR:-$(cd "${TRITON_RISCV_DIR}/../triton" && pwd)}"
 BUDDY_DIR="${BUDDY_DIR:-$(cd "${TRITON_RISCV_DIR}/../buddy-mlir" && pwd)}"
-TRITON_VENV="${TRITON_VENV:-${TRITON_RISCV_DIR}/.venv}"
+if [[ -z "${TRITON_VENV:-}" ]]; then
+  if [[ -x "${TRITON_DIR}/.venv/bin/python" ]]; then
+    TRITON_VENV="${TRITON_DIR}/.venv"
+  else
+    TRITON_VENV="${TRITON_RISCV_DIR}/.venv"
+  fi
+fi
 TRITON_HOME="${TRITON_HOME:-/tmp/triton_home}"
 TRITON_RUNTIME_ROOT="${TRITON_RUNTIME_ROOT:-${HOME}/.triton}"
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${TRITON_RUNTIME_ROOT}/cache}"
