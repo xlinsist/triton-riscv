@@ -5,10 +5,9 @@ import torch
 import triton
 import triton.language as tl
 import benchmark
-from triton.backends.triton_shared.driver import CPUDriver
 
 os.environ.setdefault("TRITON_CACHE_DIR", "/tmp/triton-cache")
-triton.runtime.driver.set_active(CPUDriver())
+benchmark.select_cpu_backend()
 
 
 @triton.jit

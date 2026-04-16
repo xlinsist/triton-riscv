@@ -72,5 +72,4 @@ def bench_load_2d_tensor_col(rows, cols):
 
 if __name__ == "__main__":
     benchmark.select_cpu_backend()
-    for rows, cols in [(8*32, 4*32), (16*32, 8*32), (32*32, 8*32)]:
-        bench_load_2d_tensor_col(rows, cols)
+    bench_load_2d_tensor_col(8 * 32, 4 * 32)
