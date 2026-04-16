@@ -113,7 +113,7 @@ Build artifacts are placed under `triton/build/{current_cmake_version}/third_par
 
 ```sh
 cd /path/to/triton-riscv
-source /scripts/triton-riscv-env.sh
+source scripts/triton-riscv-env.sh
 python -c "import triton; import triton.backends.triton_shared.compiler as c; print(triton.__version__); print(c.__file__)"
 "$TRITON_SHARED_OPT_PATH" --version
 ```
