@@ -7,4 +7,5 @@ build/*
 /python/examples/test_annotations.py
 /dump/*
 *.log
+.venv/
 .omx/

@@ -19,21 +19,19 @@ Python @triton.jit
 
 ## Clone
 
-Set `TRITON_PLUGIN_DIRS` to your `triton-riscv` directory so that Triton can discover the plugin:
-
 ```sh
-export TRITON_PLUGIN_DIRS=$(pwd)/triton-riscv
-
 git clone https://github.com/RuyiAI-Stack/triton-riscv.git triton-riscv
-git clone https://github.com/triton-lang/triton.git
-cd triton && git checkout $(cat ../triton-riscv/triton-hash.txt)
+TRITON_RISCV_DIR="$(pwd)/triton-riscv"
+git clone https://github.com/triton-lang/triton.git triton
+cd triton && git checkout "$(cat "${TRITON_RISCV_DIR}/triton-hash.txt")"
 ```
+
+> Note: Ensure PyTorch is available in your virtual environment. For RISC-V, since PyTorch does not officially support RISC-V yet, you can build from source or use third-party builds: https://community-ci.openruyi.cn/pypi/riscv64/dev/+simple/torch . To use the third-party builds, python 3.12 or 3.13 are required.
 
 Apply the build-system patches from `triton-riscv/patches/` using the helper script. These patches make the NVIDIA/AMD LLVM codegen libraries conditional on their backends being enabled, so the build succeeds without any GPU toolchain.
 
 ```sh
-cd triton
-/path/to/triton-riscv/scripts/apply_patches.sh ./
+"${TRITON_RISCV_DIR}/scripts/apply_patches.sh" "${TRITON_RISCV_DIR}/../triton"
 ```
 
 The script is idempotent: re-running it on an already-patched tree prints `SKIPPED (patch already applied)` per patch and exits cleanly.
@@ -43,9 +41,8 @@ The script is idempotent: re-running it on an already-patched tree prints `SKIPP
 ### Create a virtual environment
 
 ```sh
-# From the triton root directory
-python -m venv .venv --prompt triton-riscv
-source .venv/bin/activate
+python -m venv "${TRITON_RISCV_DIR}/.venv" --prompt triton-riscv
+source "${TRITON_RISCV_DIR}/.venv/bin/activate"
 ```
 
 ### Install dependencies
@@ -60,54 +57,74 @@ source .venv/bin/activate
 
 3. Build the Buddy Compiler — [Getting started](https://github.com/buddy-compiler/buddy-mlir?tab=readme-ov-file#getting-started)
 
-## Build
+## Environment helper
+
+[`scripts/triton-riscv-env.sh`](scripts/triton-riscv-env.sh) centralizes the local environment variables needed by `triton-riscv`.
+
+By default it assumes:
+
+- `TRITON_RISCV_DIR=/path/to/triton-riscv`
+- `TRITON_DIR=$TRITON_RISCV_DIR/../triton`
+- `TRITON_VENV=$TRITON_RISCV_DIR/.venv`
+- `BUDDY_DIR=$TRITON_RISCV_DIR/../buddy-mlir`
+- `BUILD_DIR` is auto-detected from `$TRITON_DIR/build/cmake.linux-*-cpython-*`
+
+It exports:
+
+- `TRITON_PLUGIN_DIRS`
+- `LLVM_SYSPATH`
+- `LLVM_BINARY_DIR`
+- `BUDDY_MLIR_BINARY_DIR`
+- `TRITON_SHARED_OPT_PATH`
+- `TRITON_HOME`, `TRITON_CACHE_DIR`, `TRITON_DUMP_DIR`, `TRITON_OVERRIDE_DIR`
+
+If your local layout differs, override variables before sourcing:
 
 ```sh
-cd triton
-
-# Point triton's plugin discovery at triton-riscv.
-export TRITON_PLUGIN_DIRS=/path/to/triton-riscv
-
-# Use a custom LLVM build instead of the one triton downloads.
-export LLVM_SYSPATH=/path/to/buddy-mlir/llvm/build
-
-# Install.
-pip install --no-build-isolation -vvv .
+export TRITON_DIR=/path/to/triton
+export TRITON_VENV=/path/to/triton-venv
+export BUDDY_DIR=/path/to/buddy-mlir
+source /path/to/triton-riscv/scripts/triton-riscv-env.sh
 ```
 
-> **Tip – incremental rebuilds**: After the first full build you can skip the
-> slow CMake reconfigure by building directly in the CMake output directory:
->
-> ```sh
-> BUILD_DIR=$(ls -d build/cmake.linux-*-cpython-*)
-> cmake --build $BUILD_DIR -j$(nproc)
-> # then re-install so the new .so is picked up by Python:
-> pip install --no-build-isolation -vvv .
-> ```
+This helper removes most of the repetitive local environment setup from the README, but it does not replace the external prerequisites themselves: Buddy/LLVM dependencies, a built `buddy-mlir`, a checked-out Triton tree, the virtual environment, and the patch step are still required.
+
+## Build and rebuild
+
+For both the initial build and later source-only rebuilds:
+
+```sh
+cd /path/to/triton-riscv
+source scripts/triton-riscv-env.sh
+scripts/rebuild-triton-riscv.sh
+```
+
+[`scripts/rebuild-triton-riscv.sh`](scripts/rebuild-triton-riscv.sh) does the following:
+
+- reuses the environment from `triton-riscv-env.sh`
+- removes a stale Triton build directory when it was created under an old path or with a different Python version
+- runs `cmake --build "$BUILD_DIR" -j"$(nproc)"` when an existing build directory is present
+- runs `pip install --no-build-isolation -vvv .` in `$TRITON_DIR`
+- verifies the rebuilt install with Python import and `triton-shared-opt --version`
 
 Build artifacts are placed under `triton/build/{current_cmake_version}/third_party/triton_shared`.
 
-## Set runtime environment variables
-
-Before running tests or Triton kernels, set these in your environment:
+## Verify the build
 
 ```sh
-# Path to the triton-shared-opt binary produced by the build.
-BUILD_DIR=$(ls -d build/cmake.linux-*-cpython-*)
-export TRITON_SHARED_OPT_PATH=$(pwd)/${BUILD_DIR}/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt
-
-# Directory containing buddy-opt (buddy-mlir build's bin/).
-export BUDDY_MLIR_BINARY_DIR=/path/to/buddy-mlir/build/bin
-
-# Directory containing mlir-translate, llc, opt, clang++ (LLVM build's bin/).
-export LLVM_BINARY_DIR=/path/to/buddy-mlir/llvm/build/bin
+cd /path/to/triton-riscv
+source /scripts/triton-riscv-env.sh
+python -c "import triton; import triton.backends.triton_shared.compiler as c; print(triton.__version__); print(c.__file__)"
+"$TRITON_SHARED_OPT_PATH" --version
 ```
 
-After changing the buddy-opt pass pipeline (e.g. in `backend/compiler.py`), please Triton's cache (e.g. `rm -rf ~/.triton/cache`).
+If you change the buddy-opt pass pipeline or cached compilation behavior, clear Triton's cache after sourcing the environment:
+
+```sh
+rm -rf "$TRITON_CACHE_DIR"
+```
 
 ## Run the example test suite
-
-Ensure PyTorch is available in your virtual environment; on RISC-V we recommend building PyTorch from source or cross-compiling it.
 
 ```sh
 pytest ../triton-riscv/python/examples/ \

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+_triton_riscv_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_triton_riscv_repo_root="$(cd "${_triton_riscv_script_dir}/.." && pwd)"
+
+source "${_triton_riscv_repo_root}/scripts/triton-riscv-env.sh"
+
+if [[ ! -d "${TRITON_DIR}" ]]; then
+  echo "TRITON_DIR does not exist: ${TRITON_DIR}" >&2
+  echo "Set TRITON_DIR before running this script." >&2
+  exit 1
+fi
+
+if [[ ! -x "${TRITON_VENV}/bin/pip" ]]; then
+  echo "pip not found in TRITON_VENV: ${TRITON_VENV}" >&2
+  echo "Create the virtual environment and install build deps first." >&2
+  exit 1
+fi
+
+if [[ ! -d "${LLVM_SYSPATH}" ]]; then
+  echo "LLVM_SYSPATH does not exist: ${LLVM_SYSPATH}" >&2
+  echo "Build buddy-mlir LLVM first, or override LLVM_SYSPATH/BUDDY_DIR." >&2
+  exit 1
+fi
+
+_expected_python_tag="$("${TRITON_VENV}/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+
+if [[ -n "${BUILD_DIR:-}" && -d "${BUILD_DIR}" ]]; then
+  _reconfigure_build_dir=0
+
+  if [[ "${BUILD_DIR}" != *"cpython-${_expected_python_tag}" ]]; then
+    _reconfigure_build_dir=1
+  fi
+
+  if [[ -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
+    _cached_build_root="$(sed -n 's|^# For build in directory: ||p' "${BUILD_DIR}/CMakeCache.txt" | head -n1)"
+    if [[ -n "${_cached_build_root}" && "${_cached_build_root}" != "${BUILD_DIR}" ]]; then
+      _reconfigure_build_dir=1
+    fi
+  fi
+
+  if [[ "${_reconfigure_build_dir}" -eq 1 ]]; then
+    echo "Removing stale Triton build directory: ${BUILD_DIR}" >&2
+    rm -rf "${BUILD_DIR}"
+    unset BUILD_DIR
+    unset TRITON_SHARED_OPT_PATH
+  fi
+fi
+
+if [[ -n "${BUILD_DIR:-}" && -d "${BUILD_DIR}" ]]; then
+  cmake --build "${BUILD_DIR}" -j"$(nproc)"
+fi
+
+cd "${TRITON_DIR}"
+PIP_DISABLE_PIP_VERSION_CHECK=1 "${TRITON_VENV}/bin/pip" install --no-build-isolation -vvv .
+
+if [[ -z "${BUILD_DIR:-}" || ! -d "${BUILD_DIR}" ]]; then
+  BUILD_DIR="$(
+    find "${TRITON_DIR}/build" -maxdepth 1 -mindepth 1 -type d -name 'cmake.linux-*-cpython-*' | sort | head -n1
+  )"
+  export BUILD_DIR
+  export TRITON_SHARED_OPT_PATH="${BUILD_DIR}/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt"
+fi
+
+python -c "import triton; import triton.backends.triton_shared.compiler as c; print(triton.__version__); print(c.__file__)"
+"${TRITON_SHARED_OPT_PATH}" --version
+
+unset _cached_build_root
+unset _expected_python_tag
+unset _reconfigure_build_dir
+unset _triton_riscv_repo_root
+unset _triton_riscv_script_dir
